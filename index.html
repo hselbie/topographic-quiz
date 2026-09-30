@@ -67,7 +67,7 @@
 <main>
   <section class="panel">
     <div class="panel-head">
-      <span>Topographic map — which point is the viewpoint?</span>
+      <span id="mapTitle">Topographic map</span>
       <span class="legend">Contour interval 20 m · index every 100 m</span>
     </div>
     <div class="panel-body">
@@ -79,13 +79,13 @@
 
   <section class="panel">
     <div class="panel-head">
-      <span>3D view from the mystery point</span>
-      <span class="legend">Drag to look around</span>
+      <span id="viewTitle">3D view from the mystery point</span>
+      <span class="legend" id="viewLegend">Drag to look around</span>
     </div>
     <div class="panel-body">
       <canvas id="view3d"></canvas>
       <div class="compass" id="compass">Heading 000° N</div>
-      <div class="hint">You can rotate but not move</div>
+      <div class="hint" id="viewHint">You can rotate but not move</div>
       <div id="peakLabels"></div>
     </div>
     <div class="hintbar">
@@ -99,18 +99,18 @@
 <div class="overlay" id="startOverlay">
   <div class="card">
     <h2>🗻 Topographic Quiz</h2>
-    <p>Read the contour map like a navigator. Each round you see a topographic map and a 3D view of the landscape from a mystery point on it. Work out where you're standing — as fast as you can.</p>
+    <p>Read the contour map like a navigator. Each game mixes two kinds of question: <b>Where am I?</b> (find the viewpoint on the map) and <b>Which way am I facing?</b> (you know the point — give the compass heading of the view).</p>
     <div class="diffs" id="diffs">
-      <button data-diff="easy"><b>Easy</b><span>4 marked points</span></button>
-      <button data-diff="medium"><b>Medium</b><span>6 marked points</span></button>
-      <button data-diff="hard"><b>Hard</b><span>No points — drop a pin</span></button>
+      <button data-diff="easy"><b>Easy</b><span>4 points · wide view</span></button>
+      <button data-diff="medium"><b>Medium</b><span>6 points · normal view</span></button>
+      <button data-diff="hard"><b>Hard</b><span>Drop a pin · narrow view</span></button>
     </div>
     <ol>
       <li>10 rounds, no time limit — a stopwatch runs while you think. Faster answers score more (max <b>1000</b> per round).</li>
-      <li><b>Easy / Medium:</b> pick the right point. Wrong = 0.</li>
-      <li><b>Hard:</b> drop a pin on the map (drag to fine-tune), then confirm. Within <b>100 m</b> = full marks, fading to zero at <b>600 m</b>.</li>
+      <li><b>Where am I?</b> Easy/Medium: pick the right lettered point (wrong = 0). Hard: drop a pin — within <b>100 m</b> = full marks, fading to zero at 600 m.</li>
+      <li><b>Which way am I facing?</b> The view is locked and the compass hidden. Drag the bearing arrow on the map (or type a heading) — within <b>5°</b> = full marks, fading to zero at 45°. Harder tiers narrow the field of view.</li>
       <li>Named peaks (▲) are on the map. The <b>💡 hint</b> labels the peaks visible in the 3D view — costs 40% of the round's points.</li>
-      <li>Keyboard: <b>A–F</b> to answer, <b>Enter</b> to confirm / next round.</li>
+      <li>Keyboard: <b>A–F</b> to answer, <b>←/→</b> nudge heading, <b>Enter</b> to confirm / next round.</li>
     </ol>
     <div style="display:flex; gap:10px; align-items:center; margin-top:14px;">
       <button class="btn" id="startBtn">Start game</button>
@@ -148,10 +148,13 @@ const HINT_PENALTY = 0.4;
 const HARD_FULL_RADIUS = 100;        // metres: full marks within this distance
 const HARD_ZERO_RADIUS = 600;        // metres: zero beyond this distance
 const DIFFS = {
-  easy:   { label: 'Easy',   count: 4, spacing: 0.24, freeClick: false },
-  medium: { label: 'Medium', count: 6, spacing: 0.15, freeClick: false },
-  hard:   { label: 'Hard',   count: 1, spacing: 0,    freeClick: true  },
-};            // fraction of round points lost when hint is used
+  easy:   { label: 'Easy',   count: 4, spacing: 0.24, freeClick: false, fov: 90 },
+  medium: { label: 'Medium', count: 6, spacing: 0.15, freeClick: false, fov: 60 },
+  hard:   { label: 'Hard',   count: 1, spacing: 0,    freeClick: true,  fov: 35 },
+};
+const HEADING_FULL_DEG = 5;          // full marks within this angular error
+const HEADING_ZERO_DEG = 45;         // zero beyond this
+const WHERE_FOV = 70;            // fraction of round points lost when hint is used
 const PEAK_NAMES = ['Aster', 'Bruna', 'Cairn', 'Dunmore', 'Eider', 'Falcon', 'Grey Tor', 'Hollin'];
 const WORLD_SIZE = 3000;             // metres across the map
 const MAX_HEIGHT = 420;              // metres
@@ -454,8 +457,51 @@ function drawMap(h, points, reveal, peaks = [], opts = {}) {
     mctx.beginPath(); mctx.arc(px, py - 22, 3.5, 0, Math.PI * 2); mctx.fillStyle = '#fff'; mctx.fill();
   }
 
+  // Heading question: you-are-here marker + bearing dial
+  if (opts.dial) {
+    const { u, v, guess, truth } = opts.dial;
+    const px = u * W, py = v * W, R = 110;
+    // dial ring + ticks
+    mctx.strokeStyle = 'rgba(20,30,60,.55)'; mctx.lineWidth = 1.5;
+    mctx.beginPath(); mctx.arc(px, py, R, 0, Math.PI * 2); mctx.stroke();
+    for (let a = 0; a < 360; a += 10) {
+      const rad = a * Math.PI / 180, len = a % 90 === 0 ? 14 : a % 30 === 0 ? 9 : 5;
+      mctx.lineWidth = a % 90 === 0 ? 2.5 : 1;
+      mctx.beginPath();
+      mctx.moveTo(px + Math.sin(rad) * (R - len), py - Math.cos(rad) * (R - len));
+      mctx.lineTo(px + Math.sin(rad) * R, py - Math.cos(rad) * R);
+      mctx.stroke();
+    }
+    mctx.fillStyle = '#1b2440'; mctx.font = 'bold 12px sans-serif'; mctx.textAlign = 'center'; mctx.textBaseline = 'middle';
+    [['N', 0], ['E', 90], ['S', 180], ['W', 270]].forEach(([l, a]) => {
+      const rad = a * Math.PI / 180;
+      mctx.fillText(l, px + Math.sin(rad) * (R + 12), py - Math.cos(rad) * (R + 12));
+    });
+    mctx.textAlign = 'start'; mctx.textBaseline = 'alphabetic';
+    const arrow = (deg, color, len, width) => {
+      const rad = deg * Math.PI / 180, ex = px + Math.sin(rad) * len, ey = py - Math.cos(rad) * len;
+      mctx.strokeStyle = color; mctx.fillStyle = color; mctx.lineWidth = width;
+      mctx.beginPath(); mctx.moveTo(px, py); mctx.lineTo(ex, ey); mctx.stroke();
+      const hx = Math.sin(rad), hy = -Math.cos(rad);
+      mctx.beginPath(); mctx.moveTo(ex + hx * 12, ey + hy * 12);
+      mctx.lineTo(ex - hy * 7, ey + hx * 7); mctx.lineTo(ex + hy * 7, ey - hx * 7); mctx.closePath(); mctx.fill();
+    };
+    if (truth != null) {
+      // FOV wedge of the true view
+      const half = (opts.dial.fov || 60) / 2, a0 = (truth - half) * Math.PI / 180, a1 = (truth + half) * Math.PI / 180;
+      mctx.fillStyle = 'rgba(22,163,74,.15)';
+      mctx.beginPath(); mctx.moveTo(px, py); mctx.arc(px, py, W * 0.6, a0 - Math.PI / 2, a1 - Math.PI / 2); mctx.closePath(); mctx.fill();
+      arrow(truth, '#16a34a', W * 0.45, 3);
+    }
+    if (guess != null) arrow(guess, truth != null ? '#dc2626' : '#1d4ed8', R - 4, 3);
+    // you-are-here
+    mctx.beginPath(); mctx.arc(px, py, 9, 0, Math.PI * 2); mctx.fillStyle = '#1d4ed8'; mctx.fill();
+    mctx.lineWidth = 2.5; mctx.strokeStyle = '#fff'; mctx.stroke();
+    mctx.beginPath(); mctx.arc(px, py, 3, 0, Math.PI * 2); mctx.fillStyle = '#fff'; mctx.fill();
+  }
+
   // Reveal: draw the view direction the player last looked at from the true point
-  if (reveal) {
+  if (reveal && !opts.dial) {
     const p = points[reveal.correct];
     const px = p.u * W, py = p.v * W;
     const dx = Math.sin(yaw), dz = -Math.cos(yaw);
@@ -519,18 +565,21 @@ function buildTerrainMesh(h) {
   scene.add(terrainMesh);
 }
 
-function placeCamera(p) {
+let yawLocked = false, compassHidden = false;
+function placeCamera(p, fov = WHERE_FOV) {
   camera.position.set(p.x, p.y + EYE_HEIGHT, p.z);
+  camera.fov = fov; camera.updateProjectionMatrix();
   yaw = Math.random() * Math.PI * 2; pitch = 0.02;
   updateCamera();
 }
+function headingDeg() { return ((yaw * 180 / Math.PI) % 360 + 360) % 360; }
 
 function updateCamera() {
   const dir = new THREE.Vector3(Math.sin(yaw) * Math.cos(pitch), Math.sin(pitch), -Math.cos(yaw) * Math.cos(pitch));
   camera.lookAt(camera.position.clone().add(dir));
-  const deg = ((yaw * 180 / Math.PI) % 360 + 360) % 360;
+  const deg = headingDeg();
   const dirs = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
-  document.getElementById('compass').textContent = `Heading ${String(Math.round(deg)).padStart(3, '0')}° ${dirs[Math.round(deg / 45) % 8]}`;
+  document.getElementById('compass').textContent = compassHidden ? '🧭 Compass hidden' : `Heading ${String(Math.round(deg)).padStart(3, '0')}° ${dirs[Math.round(deg / 45) % 8]}`;
 }
 
 function resize3d() {
@@ -548,7 +597,7 @@ canvas3d.addEventListener('pointerup', e => { dragging = false; canvas3d.release
 canvas3d.addEventListener('pointercancel', () => dragging = false);
 canvas3d.addEventListener('pointermove', e => {
   if (!dragging) return;
-  yaw += (e.clientX - lastX) * 0.005;
+  if (!yawLocked) yaw += (e.clientX - lastX) * 0.005;
   pitch = Math.max(-0.6, Math.min(0.8, pitch + (e.clientY - lastY) * 0.005));
   lastX = e.clientX; lastY = e.clientY;
   updateCamera();
@@ -595,6 +644,9 @@ let round = 0, score = 0, heights = null, points = [], peaks = [], target = 0, a
 let roundStart = 0, timerId = null, results = [];
 let diffKey = localStorage.getItem('topoquiz_diff') || 'easy';
 let pin = null;                       // {u,v} in Hard mode
+let qType = 'where';                  // 'where' | 'heading'
+let qPlan = [];                       // shuffled question types for this game
+let guessHeading = null;              // degrees, heading rounds
 const D = () => DIFFS[diffKey];
 animate();
 
@@ -609,6 +661,10 @@ setDifficulty(diffKey);
 
 function startGame() {
   round = 0; score = 0; results = [];
+  // Half of each question type, shuffled
+  qPlan = [];
+  for (let i = 0; i < ROUNDS; i++) qPlan.push(i < ROUNDS / 2 ? 'where' : 'heading');
+  for (let i = qPlan.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [qPlan[i], qPlan[j]] = [qPlan[j], qPlan[i]]; }
   $('scoreLbl').textContent = '0';
   $('startOverlay').classList.add('hidden');
   $('endOverlay').classList.add('hidden');
@@ -618,12 +674,14 @@ function startGame() {
 function nextRound() {
   round++;
   if (round > ROUNDS) return endGame();
-  answered = false; pin = null;
+  answered = false; pin = null; guessHeading = null;
+  qType = qPlan[round - 1] || 'where';
   const seed = (Date.now() ^ (round * 7919)) >>> 0;
   const rand = mulberry32(seed + 17);
   heights = generateTerrain(seed);
   const d = D();
-  points = pickPoints(heights, d.count, d.spacing, rand);
+  const isHeading = qType === 'heading';
+  points = isHeading ? pickPoints(heights, 1, 0, rand) : pickPoints(heights, d.count, d.spacing, rand);
   target = Math.floor(rand() * points.length);
   peaks = findPeaks(heights);
   hintUsed = false;
@@ -631,12 +689,19 @@ function nextRound() {
   $('hintText').textContent = `Stuck? Reveal the names of the peaks you can see (costs ${HINT_PENALTY * 100}% of this round's points).`;
 
   buildTerrainMesh(heights);
-  placeCamera(points[target]);
+  yawLocked = isHeading; compassHidden = isHeading;
+  placeCamera(points[target], isHeading ? d.fov : WHERE_FOV);
   redrawMap();
   renderChoices();
 
+  $('mapTitle').textContent = isHeading ? '📍 You are here — which way is the view facing?' : '❓ Where am I? Find the viewpoint';
+  $('viewTitle').textContent = isHeading ? '3D view — heading locked' : '3D view from the mystery point';
+  $('viewLegend').textContent = isHeading ? 'Drag to tilt only' : 'Drag to look around';
+  $('viewHint').textContent = isHeading ? 'View is locked to the mystery heading' : 'You can rotate but not move';
   $('roundLbl').textContent = `${round} / ${ROUNDS} · ${d.label}`;
-  $('feedback').innerHTML = d.freeClick
+  $('feedback').innerHTML = isHeading
+    ? `<span id="feedbackText">Drag the arrow on the map to the direction you're looking (or type a heading), then <b>Confirm</b>.</span>`
+    : d.freeClick
     ? `<span id="feedbackText">Click the map where you think you're standing, then press <b>Confirm</b>.</span>`
     : `<span id="feedbackText">Which point (A–${LETTERS[points.length - 1]}) was this view taken from?</span>`;
   roundStart = performance.now();
@@ -647,6 +712,11 @@ function nextRound() {
 
 function redrawMap(reveal = null) {
   const d = D();
+  if (qType === 'heading') {
+    const p = points[target];
+    drawMap(heights, points, null, peaks, { hidePoints: true, dial: { u: p.u, v: p.v, guess: guessHeading, truth: reveal ? headingDeg() : null, fov: d.fov } });
+    return;
+  }
   drawMap(heights, points, reveal, peaks, { hidePoints: d.freeClick, pin: d.freeClick ? pin : null });
 }
 
@@ -658,6 +728,15 @@ function tick() {
 function renderChoices() {
   const box = $('choices');
   box.innerHTML = '';
+  if (qType === 'heading') {
+    box.innerHTML = `<input id="headingInput" type="number" min="0" max="359" step="1" placeholder="000°" style="flex:1; min-width:90px; font-size:18px; font-weight:700; text-align:center; padding:8px; border-radius:10px; border:1px solid var(--border); background:#0f1628; color:var(--text);">
+      <button id="confirmBtn" disabled style="flex:2">🧭 Confirm heading</button>`;
+    const inp = $('headingInput');
+    inp.oninput = () => { const v = parseFloat(inp.value); if (!isNaN(v)) setGuessHeading(v, false); };
+    inp.onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); answerHeading(); } e.stopPropagation(); };
+    $('confirmBtn').onclick = () => answerHeading();
+    return;
+  }
   if (D().freeClick) {
     const b = document.createElement('button');
     b.id = 'confirmBtn'; b.textContent = '📍 Confirm pin'; b.disabled = true;
@@ -704,6 +783,34 @@ function answer(idx) {
   finishRound(pts, correct, elapsed, msg, { correct: target, chosen: idx });
 }
 
+// Heading question
+function setGuessHeading(deg, syncInput = true) {
+  if (answered || qType !== 'heading') return;
+  guessHeading = ((deg % 360) + 360) % 360;
+  if (syncInput) { const inp = $('headingInput'); if (inp) inp.value = Math.round(guessHeading); }
+  $('confirmBtn').disabled = false;
+  redrawMap();
+}
+function answerHeading() {
+  if (answered || guessHeading == null || qType !== 'heading') return;
+  const elapsed = (performance.now() - roundStart) / 1000;
+  const truth = headingDeg();
+  let err = Math.abs(guessHeading - truth) % 360; if (err > 180) err = 360 - err;
+  let f = 0;
+  if (err <= HEADING_FULL_DEG) f = 1;
+  else if (err < HEADING_ZERO_DEG) f = 1 - (err - HEADING_FULL_DEG) / (HEADING_ZERO_DEG - HEADING_FULL_DEG);
+  const pts = Math.round(1000 * f * speedFactor(elapsed) * hintFactor());
+  const correct = err <= HEADING_FULL_DEG;
+  $('confirmBtn').disabled = true; const inp = $('headingInput'); if (inp) inp.disabled = true;
+  compassHidden = false; yawLocked = false; updateCamera();
+  $('viewLegend').textContent = 'Unlocked — drag to look around'; $('viewHint').textContent = 'Compass revealed — look around to see why';
+  const eTxt = `<b>${Math.round(err)}°</b> off (true heading ${String(Math.round(truth)).padStart(3, '0')}°)`;
+  const msg = correct ? `🎯 Spot on — ${eTxt} in ${elapsed.toFixed(1)}s — <b>+${pts}</b> pts`
+    : f > 0 ? `👍 Close — ${eTxt} — <b>+${pts}</b> pts`
+    : `❌ ${eTxt} — no points.`;
+  finishRound(pts, correct, elapsed, msg, { correct: target, chosen: -1 });
+}
+
 // Hard: free click with distance scoring
 function answerPin() {
   if (answered || !pin) return;
@@ -728,7 +835,7 @@ function endGame() {
   const correctCount = results.filter(r => r.correct).length;
   const avg = results.reduce((s, r) => s + r.elapsed, 0) / Math.max(1, results.length);
   $('finalScore').textContent = score;
-  $('finalSummary').textContent = `${D().label} · ${correctCount} / ${ROUNDS} ${D().freeClick ? 'bullseyes' : 'correct'} · average ${avg.toFixed(1)}s per round`;
+  $('finalSummary').textContent = `${D().label} · ${correctCount} / ${ROUNDS} full marks · average ${avg.toFixed(1)}s per round`;
   saveHighScore(score, correctCount);
   $('endHighScores').innerHTML = highScoreTable();
   $('endOverlay').classList.remove('hidden');
@@ -746,7 +853,7 @@ function saveHighScore(s, c) {
 function highScoreTable() {
   const list = loadHighScores();
   if (!list.length) return `<p class="legend" style="margin-top:10px">No ${D().label} scores yet.</p>`;
-  return `<table><tr><th colspan="4">Best ${D().label} scores</th></tr><tr><th>#</th><th>Score</th><th>${D().freeClick ? 'Bullseyes' : 'Correct'}</th><th>Date</th></tr>` +
+  return `<table><tr><th colspan="4">Best ${D().label} scores</th></tr><tr><th>#</th><th>Score</th><th>Full marks</th><th>Date</th></tr>` +
     list.map((r, i) => `<tr><td>${i + 1}</td><td><b>${r.score}</b></td><td>${r.correct}/${ROUNDS}</td><td>${r.date}</td></tr>`).join('') + `</table>`;
 }
 
@@ -760,9 +867,22 @@ function clampPin(x, y) {
 }
 
 // Hard mode: place / drag the pin with pointer events
-let draggingPin = false;
+let draggingPin = false, draggingDial = false;
+function headingFromPointer(x, y) {
+  const p = points[target];
+  const dx = x - p.u * mapCanvas.width, dy = y - p.v * mapCanvas.height;
+  return (Math.atan2(dx, -dy) * 180 / Math.PI + 360) % 360;
+}
 mapCanvas.addEventListener('pointerdown', e => {
-  if (!D().freeClick || answered || round === 0) return;
+  if (answered || round === 0) return;
+  if (qType === 'heading') {
+    const { x, y } = mapCoords(e);
+    draggingDial = true;
+    mapCanvas.setPointerCapture(e.pointerId);
+    setGuessHeading(headingFromPointer(x, y));
+    return;
+  }
+  if (!D().freeClick) return;
   const { x, y } = mapCoords(e);
   pin = clampPin(x, y);
   draggingPin = true;
@@ -773,12 +893,14 @@ mapCanvas.addEventListener('pointerdown', e => {
   const ft = $('feedbackText'); if (ft) ft.innerHTML = 'Drag the pin to fine-tune, then press <b>Confirm</b> / Enter.';
 });
 mapCanvas.addEventListener('pointermove', e => {
+  if (draggingDial) { const { x, y } = mapCoords(e); setGuessHeading(headingFromPointer(x, y)); return; }
   if (!draggingPin) return;
   const { x, y } = mapCoords(e);
   pin = clampPin(x, y);
   redrawMap();
 });
 const endDrag = e => {
+  if (draggingDial) { draggingDial = false; try { mapCanvas.releasePointerCapture(e.pointerId); } catch {} return; }
   if (!draggingPin) return;
   draggingPin = false;
   mapCanvas.style.cursor = 'crosshair';
@@ -789,7 +911,7 @@ mapCanvas.addEventListener('pointercancel', endDrag);
 
 // Easy / Medium: click a lettered point
 mapCanvas.addEventListener('click', e => {
-  if (answered || !points.length || round === 0 || D().freeClick) return;
+  if (answered || !points.length || round === 0 || D().freeClick || qType !== 'where') return;
   const { x, y } = mapCoords(e);
   let best = -1, bestD = 28;
   points.forEach((p, i) => {
@@ -803,9 +925,14 @@ mapCanvas.addEventListener('click', e => {
 window.addEventListener('keydown', e => {
   const k = e.key.toUpperCase();
   const i = LETTERS.indexOf(k);
-  if (i >= 0 && i < points.length && !answered && round > 0 && !D().freeClick) answer(i);
+  if (qType === 'where' && i >= 0 && i < points.length && !answered && round > 0 && !D().freeClick) answer(i);
+  if (qType === 'heading' && !answered && round > 0 && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+    e.preventDefault();
+    setGuessHeading((guessHeading ?? 0) + (e.key === 'ArrowRight' ? 1 : -1) * (e.shiftKey ? 10 : 1));
+  }
   if (e.key === 'Enter') {
     if (answered) $('nextBtn')?.click();
+    else if (qType === 'heading' && guessHeading != null && round > 0) answerHeading();
     else if (D().freeClick && pin && round > 0) answerPin();
   }
 });
@@ -831,6 +958,7 @@ $('againBtn').onclick = () => { $('endOverlay').classList.add('hidden'); $('star
   placeCamera(points[0]);
   drawMap(heights, points, null, peaks);
   points = [];
+  qType = 'where';
 })();
 </script>
 </body>
