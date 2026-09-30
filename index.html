@@ -460,7 +460,9 @@ function drawMap(h, points, reveal, peaks = [], opts = {}) {
   // Heading question: you-are-here marker + bearing dial
   if (opts.dial) {
     const { u, v, guess, truth } = opts.dial;
-    const px = u * W, py = v * W, R = 110;
+    const px = u * W, py = v * W, R = 120;
+    mctx.fillStyle = 'rgba(255,255,255,.3)';
+    mctx.beginPath(); mctx.arc(px, py, R + 30, 0, Math.PI * 2); mctx.fill();
     // dial ring + ticks
     mctx.strokeStyle = 'rgba(20,30,60,.55)'; mctx.lineWidth = 1.5;
     mctx.beginPath(); mctx.arc(px, py, R, 0, Math.PI * 2); mctx.stroke();
@@ -472,11 +474,14 @@ function drawMap(h, points, reveal, peaks = [], opts = {}) {
       mctx.lineTo(px + Math.sin(rad) * R, py - Math.cos(rad) * R);
       mctx.stroke();
     }
-    mctx.fillStyle = '#1b2440'; mctx.font = 'bold 12px sans-serif'; mctx.textAlign = 'center'; mctx.textBaseline = 'middle';
-    [['N', 0], ['E', 90], ['S', 180], ['W', 270]].forEach(([l, a]) => {
+    mctx.textAlign = 'center'; mctx.textBaseline = 'middle';
+    for (let a = 0; a < 360; a += 30) {
       const rad = a * Math.PI / 180;
-      mctx.fillText(l, px + Math.sin(rad) * (R + 12), py - Math.cos(rad) * (R + 12));
-    });
+      const cardinal = { 0: 'N', 90: 'E', 180: 'S', 270: 'W' }[a];
+      mctx.fillStyle = cardinal ? '#b91c1c' : '#1b2440';
+      mctx.font = cardinal ? 'bold 13px sans-serif' : 'bold 11px sans-serif';
+      mctx.fillText(cardinal ? `${cardinal} ${String(a).padStart(3, '0')}` : String(a).padStart(3, '0'), px + Math.sin(rad) * (R + 16), py - Math.cos(rad) * (R + 16));
+    }
     mctx.textAlign = 'start'; mctx.textBaseline = 'alphabetic';
     const arrow = (deg, color, len, width) => {
       const rad = deg * Math.PI / 180, ex = px + Math.sin(rad) * len, ey = py - Math.cos(rad) * len;
@@ -493,7 +498,18 @@ function drawMap(h, points, reveal, peaks = [], opts = {}) {
       mctx.beginPath(); mctx.moveTo(px, py); mctx.arc(px, py, W * 0.6, a0 - Math.PI / 2, a1 - Math.PI / 2); mctx.closePath(); mctx.fill();
       arrow(truth, '#16a34a', W * 0.45, 3);
     }
-    if (guess != null) arrow(guess, truth != null ? '#dc2626' : '#1d4ed8', R - 4, 3);
+    if (guess != null) {
+      arrow(guess, truth != null ? '#dc2626' : '#1d4ed8', R - 4, 3);
+      const rad = guess * Math.PI / 180, lx = px + Math.sin(rad) * (R + 42), ly = py - Math.cos(rad) * (R + 42);
+      const txt = `${String(Math.round(guess)).padStart(3, '0')}°`;
+      mctx.font = 'bold 14px sans-serif';
+      const tw = mctx.measureText(txt).width;
+      mctx.fillStyle = truth != null ? '#dc2626' : '#1d4ed8';
+      mctx.beginPath(); mctx.roundRect(lx - tw / 2 - 6, ly - 11, tw + 12, 22, 6); mctx.fill();
+      mctx.fillStyle = '#fff'; mctx.textAlign = 'center'; mctx.textBaseline = 'middle';
+      mctx.fillText(txt, lx, ly + 1);
+      mctx.textAlign = 'start'; mctx.textBaseline = 'alphabetic';
+    }
     // you-are-here
     mctx.beginPath(); mctx.arc(px, py, 9, 0, Math.PI * 2); mctx.fillStyle = '#1d4ed8'; mctx.fill();
     mctx.lineWidth = 2.5; mctx.strokeStyle = '#fff'; mctx.stroke();
