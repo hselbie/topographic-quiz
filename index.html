@@ -19,7 +19,7 @@
   .panel { background:var(--panel); border:1px solid var(--border); border-radius:14px; overflow:hidden; display:flex; flex-direction:column; }
   .panel-head { display:flex; justify-content:space-between; align-items:center; padding:8px 12px; font-size:13px; color:var(--muted); border-bottom:1px solid var(--border); }
   .panel-body { position:relative; }
-  #mapCanvas { display:block; width:100%; height:auto; background:#f4f1e6; cursor:crosshair; touch-action:manipulation; }
+  #mapCanvas { display:block; width:100%; height:auto; background:#f4f1e6; cursor:crosshair; touch-action:none; }
   #view3d { width:100%; aspect-ratio: 1/1; display:block; cursor:grab; touch-action:none; }
   #view3d:active { cursor:grabbing; }
   .compass { position:absolute; top:10px; left:50%; transform:translateX(-50%); background:rgba(0,0,0,.55); padding:4px 12px; border-radius:20px; font-size:13px; font-variant-numeric: tabular-nums; pointer-events:none; }
@@ -41,6 +41,10 @@
   .card h2 { margin:0 0 8px; font-size:26px; }
   .card p { color:var(--muted); line-height:1.5; }
   .card ol { color:var(--muted); line-height:1.6; padding-left:20px; }
+  .diffs { display:flex; gap:8px; margin:12px 0 4px; }
+  .diffs button { flex:1; padding:10px 6px; border-radius:12px; border:1px solid var(--border); background:#1a2440; color:var(--text); cursor:pointer; display:flex; flex-direction:column; gap:3px; align-items:center; }
+  .diffs button span { font-size:11px; color:var(--muted); }
+  .diffs button.active { border-color:var(--accent); background:#12314a; }
   .hidden { display:none !important; }
   table { width:100%; border-collapse:collapse; font-size:14px; margin-top:6px; }
   td, th { padding:5px 8px; text-align:left; border-bottom:1px solid var(--border); }
@@ -95,14 +99,18 @@
 <div class="overlay" id="startOverlay">
   <div class="card">
     <h2>🗻 Topographic Quiz</h2>
-    <p>Read the contour map like a navigator. Each round you see a topographic map with several marked points and a 3D view of the landscape from <b>one</b> of those points. Pick the right point as fast as you can.</p>
+    <p>Read the contour map like a navigator. Each round you see a topographic map and a 3D view of the landscape from a mystery point on it. Work out where you're standing — as fast as you can.</p>
+    <div class="diffs" id="diffs">
+      <button data-diff="easy"><b>Easy</b><span>4 marked points</span></button>
+      <button data-diff="medium"><b>Medium</b><span>6 marked points</span></button>
+      <button data-diff="hard"><b>Hard</b><span>No points — drop a pin</span></button>
+    </div>
     <ol>
-      <li>10 rounds. No time limit — a stopwatch runs while you think.</li>
-      <li>Correct answer: up to <b>1000 pts</b> — faster is better.</li>
-      <li>Wrong answer or time-out: 0 pts.</li>
-      <li>Named peaks (▲) are marked on the map. Use the <b>💡 hint</b> to label the peaks visible in the 3D view — it costs 40% of the round's points.</li>
-      <li>Difficulty ramps up: more points, closer together.</li>
-      <li>Keyboard: press <b>A–F</b> to answer, <b>Enter</b> for next round.</li>
+      <li>10 rounds, no time limit — a stopwatch runs while you think. Faster answers score more (max <b>1000</b> per round).</li>
+      <li><b>Easy / Medium:</b> pick the right point. Wrong = 0.</li>
+      <li><b>Hard:</b> drop a pin on the map (drag to fine-tune), then confirm. Within <b>100 m</b> = full marks, fading to zero at <b>600 m</b>.</li>
+      <li>Named peaks (▲) are on the map. The <b>💡 hint</b> labels the peaks visible in the 3D view — costs 40% of the round's points.</li>
+      <li>Keyboard: <b>A–F</b> to answer, <b>Enter</b> to confirm / next round.</li>
     </ol>
     <div style="display:flex; gap:10px; align-items:center; margin-top:14px;">
       <button class="btn" id="startBtn">Start game</button>
@@ -136,7 +144,14 @@ import * as THREE from 'three';
 // ---------------------------------------------------------------------------
 const ROUNDS = 10;
 const SCORE_WINDOW = 180;            // seconds over which the speed bonus decays to zero
-const HINT_PENALTY = 0.4;            // fraction of round points lost when hint is used
+const HINT_PENALTY = 0.4;
+const HARD_FULL_RADIUS = 100;        // metres: full marks within this distance
+const HARD_ZERO_RADIUS = 600;        // metres: zero beyond this distance
+const DIFFS = {
+  easy:   { label: 'Easy',   count: 4, spacing: 0.24, freeClick: false },
+  medium: { label: 'Medium', count: 6, spacing: 0.15, freeClick: false },
+  hard:   { label: 'Hard',   count: 1, spacing: 0,    freeClick: true  },
+};            // fraction of round points lost when hint is used
 const PEAK_NAMES = ['Aster', 'Bruna', 'Cairn', 'Dunmore', 'Eider', 'Falcon', 'Grey Tor', 'Hollin'];
 const WORLD_SIZE = 3000;             // metres across the map
 const MAX_HEIGHT = 420;              // metres
@@ -308,7 +323,7 @@ function isVisible(h, from, to) {
 const mapCanvas = document.getElementById('mapCanvas');
 const mctx = mapCanvas.getContext('2d');
 
-function drawMap(h, points, reveal, peaks = []) {
+function drawMap(h, points, reveal, peaks = [], opts = {}) {
   const W = mapCanvas.width, S = W / (GRID - 1);
   mctx.fillStyle = '#f4f1e6';
   mctx.fillRect(0, 0, W, W);
@@ -390,8 +405,8 @@ function drawMap(h, points, reveal, peaks = []) {
     mctx.fillStyle = '#1b1b1b'; mctx.fillText(label, px + 11, py);
   });
 
-  // Points
-  points.forEach((p, idx) => {
+  // Points (hidden in free-click mode)
+  if (!opts.hidePoints) points.forEach((p, idx) => {
     const px = p.u * W, py = p.v * W;
     let fill = '#1d4ed8', ring = '#fff';
     if (reveal) {
@@ -410,6 +425,34 @@ function drawMap(h, points, reveal, peaks = []) {
     mctx.fillText(LETTERS[idx], px, py + 1);
     mctx.textAlign = 'start'; mctx.textBaseline = 'alphabetic';
   });
+
+  // Free-click mode: player's pin, and on reveal the true point + error line
+  if (opts.pin) {
+    const px = opts.pin.u * W, py = opts.pin.v * W;
+    if (reveal) {
+      const t = points[reveal.correct];
+      const tx = t.u * W, ty = t.v * W;
+      // tolerance rings
+      mctx.setLineDash([5, 4]); mctx.lineWidth = 1.5;
+      mctx.strokeStyle = 'rgba(22,163,74,.8)';
+      mctx.beginPath(); mctx.arc(tx, ty, HARD_FULL_RADIUS / WORLD_SIZE * W, 0, Math.PI * 2); mctx.stroke();
+      mctx.strokeStyle = 'rgba(220,38,38,.6)';
+      mctx.beginPath(); mctx.arc(tx, ty, HARD_ZERO_RADIUS / WORLD_SIZE * W, 0, Math.PI * 2); mctx.stroke();
+      mctx.setLineDash([]);
+      // error line
+      mctx.strokeStyle = '#111'; mctx.lineWidth = 2;
+      mctx.beginPath(); mctx.moveTo(px, py); mctx.lineTo(tx, ty); mctx.stroke();
+      // true point
+      mctx.beginPath(); mctx.arc(tx, ty, 11, 0, Math.PI * 2);
+      mctx.fillStyle = '#16a34a'; mctx.fill(); mctx.lineWidth = 2.5; mctx.strokeStyle = '#fff'; mctx.stroke();
+    }
+    // pin
+    mctx.fillStyle = reveal ? '#dc2626' : '#1d4ed8';
+    mctx.strokeStyle = '#fff'; mctx.lineWidth = 2;
+    mctx.beginPath(); mctx.moveTo(px, py); mctx.lineTo(px - 9, py - 20); mctx.arc(px, py - 22, 9, Math.PI * 0.85, Math.PI * 2.15); mctx.closePath();
+    mctx.fill(); mctx.stroke();
+    mctx.beginPath(); mctx.arc(px, py - 22, 3.5, 0, Math.PI * 2); mctx.fillStyle = '#fff'; mctx.fill();
+  }
 
   // Reveal: draw the view direction the player last looked at from the true point
   if (reveal) {
@@ -550,13 +593,19 @@ function animate() {
 const $ = id => document.getElementById(id);
 let round = 0, score = 0, heights = null, points = [], peaks = [], target = 0, answered = false, hintUsed = false;
 let roundStart = 0, timerId = null, results = [];
+let diffKey = localStorage.getItem('topoquiz_diff') || 'easy';
+let pin = null;                       // {u,v} in Hard mode
+const D = () => DIFFS[diffKey];
 animate();
 
-function difficulty(r) {          // r = 1..ROUNDS
-  if (r <= 3) return { count: 4, spacing: 0.26 };
-  if (r <= 7) return { count: 5, spacing: 0.2 };
-  return { count: 6, spacing: 0.15 };
+function setDifficulty(k) {
+  diffKey = k;
+  localStorage.setItem('topoquiz_diff', k);
+  [...$('diffs').children].forEach(b => b.classList.toggle('active', b.dataset.diff === k));
+  $('highScores').innerHTML = highScoreTable();
 }
+[...$('diffs').children].forEach(b => b.onclick = () => setDifficulty(b.dataset.diff));
+setDifficulty(diffKey);
 
 function startGame() {
   round = 0; score = 0; results = [];
@@ -569,11 +618,11 @@ function startGame() {
 function nextRound() {
   round++;
   if (round > ROUNDS) return endGame();
-  answered = false;
+  answered = false; pin = null;
   const seed = (Date.now() ^ (round * 7919)) >>> 0;
   const rand = mulberry32(seed + 17);
   heights = generateTerrain(seed);
-  const d = difficulty(round);
+  const d = D();
   points = pickPoints(heights, d.count, d.spacing, rand);
   target = Math.floor(rand() * points.length);
   peaks = findPeaks(heights);
@@ -583,15 +632,22 @@ function nextRound() {
 
   buildTerrainMesh(heights);
   placeCamera(points[target]);
-  drawMap(heights, points, null, peaks);
+  redrawMap();
   renderChoices();
 
-  $('roundLbl').textContent = `${round} / ${ROUNDS}`;
-  $('feedback').innerHTML = `<span id="feedbackText">Which point (A–${LETTERS[points.length - 1]}) was this view taken from?</span>`;
+  $('roundLbl').textContent = `${round} / ${ROUNDS} · ${d.label}`;
+  $('feedback').innerHTML = d.freeClick
+    ? `<span id="feedbackText">Click the map where you think you're standing, then press <b>Confirm</b>.</span>`
+    : `<span id="feedbackText">Which point (A–${LETTERS[points.length - 1]}) was this view taken from?</span>`;
   roundStart = performance.now();
   clearInterval(timerId);
   timerId = setInterval(tick, 100);
   tick();
+}
+
+function redrawMap(reveal = null) {
+  const d = D();
+  drawMap(heights, points, reveal, peaks, { hidePoints: d.freeClick, pin: d.freeClick ? pin : null });
 }
 
 function tick() {
@@ -602,6 +658,13 @@ function tick() {
 function renderChoices() {
   const box = $('choices');
   box.innerHTML = '';
+  if (D().freeClick) {
+    const b = document.createElement('button');
+    b.id = 'confirmBtn'; b.textContent = '📍 Confirm pin'; b.disabled = true;
+    b.onclick = () => pin && answerPin();
+    box.appendChild(b);
+    return;
+  }
   points.forEach((_, i) => {
     const b = document.createElement('button');
     b.textContent = LETTERS[i];
@@ -610,65 +673,124 @@ function renderChoices() {
   });
 }
 
-function answer(idx) {
-  if (answered) return;
+function speedFactor(elapsed) { return 0.25 + 0.75 * Math.max(0, 1 - elapsed / SCORE_WINDOW); }
+function hintFactor() { return hintUsed ? 1 - HINT_PENALTY : 1; }
+
+function finishRound(pts, correct, elapsed, msg, reveal) {
   answered = true;
   clearInterval(timerId);
-  const elapsed = (performance.now() - roundStart) / 1000;
-  const correct = idx === target;
-  let pts = 0;
-  if (correct) pts = Math.round(1000 * (0.25 + 0.75 * Math.max(0, 1 - elapsed / SCORE_WINDOW)) * (hintUsed ? 1 - HINT_PENALTY : 1));
   $('hintBtn').disabled = true;
   score += pts;
   results.push({ round, correct, elapsed, pts });
   $('scoreLbl').textContent = score;
+  redrawMap(reveal);
+  $('feedback').innerHTML = `<span>${msg}</span><button class="btn" id="nextBtn">${round >= ROUNDS ? 'See results' : 'Next round →'}</button>`;
+  $('nextBtn').onclick = nextRound;
+}
 
-  drawMap(heights, points, { correct: target, chosen: idx }, peaks);
+// Easy / Medium: multiple choice
+function answer(idx) {
+  if (answered || D().freeClick) return;
+  const elapsed = (performance.now() - roundStart) / 1000;
+  const correct = idx === target;
+  const pts = correct ? Math.round(1000 * speedFactor(elapsed) * hintFactor()) : 0;
   [...$('choices').children].forEach((b, i) => {
     b.disabled = true;
     if (i === target) b.classList.add('correct');
     else if (i === idx) b.classList.add('wrong');
   });
-
-  const msg = idx === -1 ? `⏱️ Time's up! It was point <b>${LETTERS[target]}</b>.`
-    : correct ? `✅ Correct! Point <b>${LETTERS[target]}</b> in ${elapsed.toFixed(1)}s — <b>+${pts}</b> pts`
+  const msg = correct ? `✅ Correct! Point <b>${LETTERS[target]}</b> in ${elapsed.toFixed(1)}s — <b>+${pts}</b> pts`
     : `❌ Not quite. You chose <b>${LETTERS[idx]}</b>; it was <b>${LETTERS[target]}</b> (${Math.round(points[target].y)} m).`;
-  $('feedback').innerHTML = `<span>${msg}</span><button class="btn" id="nextBtn">${round >= ROUNDS ? 'See results' : 'Next round →'}</button>`;
-  $('nextBtn').onclick = nextRound;
+  finishRound(pts, correct, elapsed, msg, { correct: target, chosen: idx });
+}
+
+// Hard: free click with distance scoring
+function answerPin() {
+  if (answered || !pin) return;
+  const elapsed = (performance.now() - roundStart) / 1000;
+  const t = points[target];
+  const dist = Math.hypot((pin.u - t.u) * WORLD_SIZE, (pin.v - t.v) * WORLD_SIZE);
+  let distFactor = 0;
+  if (dist <= HARD_FULL_RADIUS) distFactor = 1;
+  else if (dist < HARD_ZERO_RADIUS) distFactor = 1 - (dist - HARD_FULL_RADIUS) / (HARD_ZERO_RADIUS - HARD_FULL_RADIUS);
+  const pts = Math.round(1000 * distFactor * speedFactor(elapsed) * hintFactor());
+  const correct = dist <= HARD_FULL_RADIUS;
+  $('confirmBtn').disabled = true;
+  const dTxt = `<b>${Math.round(dist)} m</b> off`;
+  const msg = correct ? `🎯 Bullseye — ${dTxt} in ${elapsed.toFixed(1)}s — <b>+${pts}</b> pts`
+    : distFactor > 0 ? `👍 Close — ${dTxt} — <b>+${pts}</b> pts`
+    : `❌ ${dTxt} — no points. The green dot is where you were.`;
+  finishRound(pts, correct, elapsed, msg, { correct: target, chosen: -1, dist });
 }
 
 function endGame() {
   clearInterval(timerId);
   const correctCount = results.filter(r => r.correct).length;
-  const avg = results.filter(r => r.correct).reduce((s, r) => s + r.elapsed, 0) / Math.max(1, correctCount);
+  const avg = results.reduce((s, r) => s + r.elapsed, 0) / Math.max(1, results.length);
   $('finalScore').textContent = score;
-  $('finalSummary').textContent = `${correctCount} / ${ROUNDS} correct · average time on correct answers ${correctCount ? avg.toFixed(1) + 's' : '–'}`;
+  $('finalSummary').textContent = `${D().label} · ${correctCount} / ${ROUNDS} ${D().freeClick ? 'bullseyes' : 'correct'} · average ${avg.toFixed(1)}s per round`;
   saveHighScore(score, correctCount);
   $('endHighScores').innerHTML = highScoreTable();
   $('endOverlay').classList.remove('hidden');
 }
 
-// High scores (localStorage)
-function loadHighScores() { try { return JSON.parse(localStorage.getItem('topoquiz_scores') || '[]'); } catch { return []; } }
+// High scores (localStorage, per difficulty)
+const hsKey = () => `topoquiz_scores_${diffKey}`;
+function loadHighScores() { try { return JSON.parse(localStorage.getItem(hsKey()) || '[]'); } catch { return []; } }
 function saveHighScore(s, c) {
   const list = loadHighScores();
   list.push({ score: s, correct: c, date: new Date().toISOString().slice(0, 10) });
   list.sort((a, b) => b.score - a.score);
-  localStorage.setItem('topoquiz_scores', JSON.stringify(list.slice(0, 5)));
+  localStorage.setItem(hsKey(), JSON.stringify(list.slice(0, 5)));
 }
 function highScoreTable() {
   const list = loadHighScores();
-  if (!list.length) return '';
-  return `<table><tr><th>#</th><th>Score</th><th>Correct</th><th>Date</th></tr>` +
+  if (!list.length) return `<p class="legend" style="margin-top:10px">No ${D().label} scores yet.</p>`;
+  return `<table><tr><th colspan="4">Best ${D().label} scores</th></tr><tr><th>#</th><th>Score</th><th>${D().freeClick ? 'Bullseyes' : 'Correct'}</th><th>Date</th></tr>` +
     list.map((r, i) => `<tr><td>${i + 1}</td><td><b>${r.score}</b></td><td>${r.correct}/${ROUNDS}</td><td>${r.date}</td></tr>`).join('') + `</table>`;
 }
 
-// Map click
-mapCanvas.addEventListener('click', e => {
-  if (answered || !points.length) return;
+// Map interaction
+function mapCoords(e) {
   const r = mapCanvas.getBoundingClientRect();
-  const x = (e.clientX - r.left) / r.width * mapCanvas.width;
-  const y = (e.clientY - r.top) / r.height * mapCanvas.height;
+  return { x: (e.clientX - r.left) / r.width * mapCanvas.width, y: (e.clientY - r.top) / r.height * mapCanvas.height };
+}
+function clampPin(x, y) {
+  return { u: Math.min(1, Math.max(0, x / mapCanvas.width)), v: Math.min(1, Math.max(0, y / mapCanvas.height)) };
+}
+
+// Hard mode: place / drag the pin with pointer events
+let draggingPin = false;
+mapCanvas.addEventListener('pointerdown', e => {
+  if (!D().freeClick || answered || round === 0) return;
+  const { x, y } = mapCoords(e);
+  pin = clampPin(x, y);
+  draggingPin = true;
+  mapCanvas.setPointerCapture(e.pointerId);
+  mapCanvas.style.cursor = 'grabbing';
+  redrawMap();
+  $('confirmBtn').disabled = false;
+  const ft = $('feedbackText'); if (ft) ft.innerHTML = 'Drag the pin to fine-tune, then press <b>Confirm</b> / Enter.';
+});
+mapCanvas.addEventListener('pointermove', e => {
+  if (!draggingPin) return;
+  const { x, y } = mapCoords(e);
+  pin = clampPin(x, y);
+  redrawMap();
+});
+const endDrag = e => {
+  if (!draggingPin) return;
+  draggingPin = false;
+  mapCanvas.style.cursor = 'crosshair';
+  try { mapCanvas.releasePointerCapture(e.pointerId); } catch {}
+};
+mapCanvas.addEventListener('pointerup', endDrag);
+mapCanvas.addEventListener('pointercancel', endDrag);
+
+// Easy / Medium: click a lettered point
+mapCanvas.addEventListener('click', e => {
+  if (answered || !points.length || round === 0 || D().freeClick) return;
+  const { x, y } = mapCoords(e);
   let best = -1, bestD = 28;
   points.forEach((p, i) => {
     const d = Math.hypot(p.u * mapCanvas.width - x, p.v * mapCanvas.height - y);
@@ -681,8 +803,11 @@ mapCanvas.addEventListener('click', e => {
 window.addEventListener('keydown', e => {
   const k = e.key.toUpperCase();
   const i = LETTERS.indexOf(k);
-  if (i >= 0 && i < points.length && !answered && round > 0) answer(i);
-  if (e.key === 'Enter' && answered) $('nextBtn')?.click();
+  if (i >= 0 && i < points.length && !answered && round > 0 && !D().freeClick) answer(i);
+  if (e.key === 'Enter') {
+    if (answered) $('nextBtn')?.click();
+    else if (D().freeClick && pin && round > 0) answerPin();
+  }
 });
 
 $('hintBtn').onclick = () => {
@@ -693,8 +818,7 @@ $('hintBtn').onclick = () => {
 };
 
 $('startBtn').onclick = startGame;
-$('againBtn').onclick = startGame;
-$('highScores').innerHTML = highScoreTable();
+$('againBtn').onclick = () => { $('endOverlay').classList.add('hidden'); $('startOverlay').classList.remove('hidden'); $('highScores').innerHTML = highScoreTable(); };
 
 // Show a preview terrain behind the start screen
 (() => {
