@@ -1,0 +1,713 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Topographic Quiz</title>
+<style>
+  :root { --bg:#0b1020; --panel:#121a2e; --border:#243050; --text:#e6ecff; --muted:#8a97b8; --accent:#4cc9f0; --good:#3ddc84; --bad:#ff5c7a; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+  header { display:flex; align-items:center; justify-content:space-between; padding:10px 18px; border-bottom:1px solid var(--border); background:#0d1426; position:sticky; top:0; z-index:5; }
+  header h1 { font-size:18px; margin:0; letter-spacing:.5px; }
+  header h1 span { color:var(--accent); }
+  .stats { display:flex; gap:18px; font-size:14px; color:var(--muted); }
+  .stats b { color:var(--text); font-variant-numeric: tabular-nums; }
+  #timer.warn { color:var(--bad); }
+  main { max-width:1400px; margin:0 auto; padding:14px; display:grid; grid-template-columns: 1fr 1fr; gap:14px; }
+  @media (max-width: 950px) { main { grid-template-columns: 1fr; } }
+  .panel { background:var(--panel); border:1px solid var(--border); border-radius:14px; overflow:hidden; display:flex; flex-direction:column; }
+  .panel-head { display:flex; justify-content:space-between; align-items:center; padding:8px 12px; font-size:13px; color:var(--muted); border-bottom:1px solid var(--border); }
+  .panel-body { position:relative; }
+  #mapCanvas { display:block; width:100%; height:auto; background:#f4f1e6; cursor:crosshair; touch-action:manipulation; }
+  #view3d { width:100%; aspect-ratio: 1/1; display:block; cursor:grab; touch-action:none; }
+  #view3d:active { cursor:grabbing; }
+  .compass { position:absolute; top:10px; left:50%; transform:translateX(-50%); background:rgba(0,0,0,.55); padding:4px 12px; border-radius:20px; font-size:13px; font-variant-numeric: tabular-nums; pointer-events:none; }
+  .peakLabel { position:absolute; transform:translate(-50%, -100%); background:rgba(10,14,28,.78); color:#ffe08a; border:1px solid rgba(255,224,138,.5); padding:2px 7px; border-radius:8px; font-size:12px; font-weight:700; white-space:nowrap; pointer-events:none; }
+  .peakLabel::after { content:''; position:absolute; left:50%; bottom:-7px; transform:translateX(-50%); border:4px solid transparent; border-top-color:rgba(255,224,138,.7); border-bottom:0; }
+  .hintbar { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:8px 12px; border-top:1px solid var(--border); font-size:13px; color:var(--muted); }
+  .hint { position:absolute; bottom:10px; left:50%; transform:translateX(-50%); background:rgba(0,0,0,.45); padding:4px 10px; border-radius:20px; font-size:12px; color:#cbd5f5; pointer-events:none; }
+  .choices { display:flex; gap:8px; padding:10px 12px; flex-wrap:wrap; border-top:1px solid var(--border); }
+  .choices button { flex:1; min-width:54px; padding:10px 0; font-size:16px; font-weight:700; border-radius:10px; border:1px solid var(--border); background:#1a2440; color:var(--text); cursor:pointer; }
+  .choices button:hover { border-color:var(--accent); }
+  .choices button:disabled { opacity:.5; cursor:default; }
+  .choices button.correct { background:#14532d; border-color:var(--good); }
+  .choices button.wrong { background:#5b1a2a; border-color:var(--bad); }
+  .feedback { padding:10px 12px; font-size:14px; min-height:44px; display:flex; align-items:center; justify-content:space-between; gap:10px; border-top:1px solid var(--border); }
+  .btn { padding:9px 16px; border-radius:10px; border:none; background:var(--accent); color:#04121c; font-weight:700; cursor:pointer; font-size:14px; }
+  .btn.secondary { background:#1a2440; color:var(--text); border:1px solid var(--border); }
+  .overlay { position:fixed; inset:0; background:rgba(5,8,18,.9); display:flex; align-items:center; justify-content:center; z-index:20; padding:16px; }
+  .card { background:var(--panel); border:1px solid var(--border); border-radius:16px; padding:26px; max-width:560px; width:100%; }
+  .card h2 { margin:0 0 8px; font-size:26px; }
+  .card p { color:var(--muted); line-height:1.5; }
+  .card ol { color:var(--muted); line-height:1.6; padding-left:20px; }
+  .hidden { display:none !important; }
+  table { width:100%; border-collapse:collapse; font-size:14px; margin-top:6px; }
+  td, th { padding:5px 8px; text-align:left; border-bottom:1px solid var(--border); }
+  th { color:var(--muted); font-weight:600; }
+  .legend { font-size:11px; color:var(--muted); }
+  .big { font-size:42px; font-weight:800; color:var(--accent); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>🗻 Topographic <span>Quiz</span></h1>
+  <div class="stats">
+    <div>Round <b id="roundLbl">–</b></div>
+    <div>⏱ <b id="timer">0.0</b>s</div>
+    <div>Score <b id="scoreLbl">0</b></div>
+  </div>
+</header>
+
+<main>
+  <section class="panel">
+    <div class="panel-head">
+      <span>Topographic map — which point is the viewpoint?</span>
+      <span class="legend">Contour interval 20 m · index every 100 m</span>
+    </div>
+    <div class="panel-body">
+      <canvas id="mapCanvas" width="700" height="700"></canvas>
+    </div>
+    <div class="choices" id="choices"></div>
+    <div class="feedback" id="feedback"><span id="feedbackText">Study the 3D view, then click the point on the map you think it was taken from.</span></div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head">
+      <span>3D view from the mystery point</span>
+      <span class="legend">Drag to look around</span>
+    </div>
+    <div class="panel-body">
+      <canvas id="view3d"></canvas>
+      <div class="compass" id="compass">Heading 000° N</div>
+      <div class="hint">You can rotate but not move</div>
+      <div id="peakLabels"></div>
+    </div>
+    <div class="hintbar">
+      <span id="hintText">Stuck? Reveal the names of the peaks you can see (costs 40% of this round's points).</span>
+      <button class="btn secondary" id="hintBtn">💡 Name the peaks</button>
+    </div>
+  </section>
+</main>
+
+<!-- Start screen -->
+<div class="overlay" id="startOverlay">
+  <div class="card">
+    <h2>🗻 Topographic Quiz</h2>
+    <p>Read the contour map like a navigator. Each round you see a topographic map with several marked points and a 3D view of the landscape from <b>one</b> of those points. Pick the right point as fast as you can.</p>
+    <ol>
+      <li>10 rounds. No time limit — a stopwatch runs while you think.</li>
+      <li>Correct answer: up to <b>1000 pts</b> — faster is better.</li>
+      <li>Wrong answer or time-out: 0 pts.</li>
+      <li>Named peaks (▲) are marked on the map. Use the <b>💡 hint</b> to label the peaks visible in the 3D view — it costs 40% of the round's points.</li>
+      <li>Difficulty ramps up: more points, closer together.</li>
+      <li>Keyboard: press <b>A–F</b> to answer, <b>Enter</b> for next round.</li>
+    </ol>
+    <div style="display:flex; gap:10px; align-items:center; margin-top:14px;">
+      <button class="btn" id="startBtn">Start game</button>
+    </div>
+    <div id="highScores"></div>
+  </div>
+</div>
+
+<!-- End screen -->
+<div class="overlay hidden" id="endOverlay">
+  <div class="card">
+    <h2>Game over</h2>
+    <div class="big" id="finalScore">0</div>
+    <p id="finalSummary"></p>
+    <div id="endHighScores"></div>
+    <div style="display:flex; gap:10px; margin-top:14px;">
+      <button class="btn" id="againBtn">Play again</button>
+    </div>
+  </div>
+</div>
+
+<script type="importmap">
+{ "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+
+// ---------------------------------------------------------------------------
+// Config
+// ---------------------------------------------------------------------------
+const ROUNDS = 10;
+const SCORE_WINDOW = 180;            // seconds over which the speed bonus decays to zero
+const HINT_PENALTY = 0.4;            // fraction of round points lost when hint is used
+const PEAK_NAMES = ['Aster', 'Bruna', 'Cairn', 'Dunmore', 'Eider', 'Falcon', 'Grey Tor', 'Hollin'];
+const WORLD_SIZE = 3000;             // metres across the map
+const MAX_HEIGHT = 420;              // metres
+const GRID = 161;                    // heightmap resolution (GRID x GRID)
+const CONTOUR_INTERVAL = 20;
+const INDEX_EVERY = 5;               // every 5th contour is bold (100 m)
+const EYE_HEIGHT = 2;
+const SEA_LEVEL = 20;                // metres; terrain tapers into sea at the map edges
+const LETTERS = 'ABCDEF';
+
+// ---------------------------------------------------------------------------
+// Random + noise
+// ---------------------------------------------------------------------------
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+
+class Perlin {
+  constructor(rand) {
+    const perm = [...Array(256).keys()];
+    for (let i = 255; i > 0; i--) { const j = Math.floor(rand() * (i + 1)); [perm[i], perm[j]] = [perm[j], perm[i]]; }
+    this.p = new Uint8Array(512);
+    for (let i = 0; i < 512; i++) this.p[i] = perm[i & 255];
+  }
+  fade(t) { return t * t * t * (t * (t * 6 - 15) + 10); }
+  grad(h, x, y) {
+    switch (h & 7) {
+      case 0: return x + y; case 1: return -x + y; case 2: return x - y; case 3: return -x - y;
+      case 4: return x; case 5: return -x; case 6: return y; default: return -y;
+    }
+  }
+  noise(x, y) {
+    const X = Math.floor(x) & 255, Y = Math.floor(y) & 255;
+    x -= Math.floor(x); y -= Math.floor(y);
+    const u = this.fade(x), v = this.fade(y), p = this.p;
+    const A = p[X] + Y, B = p[X + 1] + Y;
+    const l = (a, b, t) => a + t * (b - a);
+    return l(l(this.grad(p[A], x, y), this.grad(p[B], x - 1, y), u),
+             l(this.grad(p[A + 1], x, y - 1), this.grad(p[B + 1], x - 1, y - 1), u), v);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Terrain generation
+// ---------------------------------------------------------------------------
+function generateTerrain(seed) {
+  const rand = mulberry32(seed);
+  const n1 = new Perlin(rand), n2 = new Perlin(rand);
+  const ox = rand() * 1000, oy = rand() * 1000;
+  const baseFreq = 1.6 + rand() * 1.2;
+  const ridgeMix = 0.3 + rand() * 0.5;
+  const h = new Float32Array(GRID * GRID);
+  let min = Infinity, max = -Infinity;
+
+  for (let j = 0; j < GRID; j++) {
+    for (let i = 0; i < GRID; i++) {
+      const u = i / (GRID - 1), v = j / (GRID - 1);
+      // fBm
+      let f = 0, amp = 1, freq = baseFreq, norm = 0;
+      for (let o = 0; o < 6; o++) {
+        f += amp * n1.noise(u * freq + ox, v * freq + oy);
+        norm += amp; amp *= 0.5; freq *= 2.05;
+      }
+      f = f / norm;
+      // ridged
+      let r = 0; amp = 1; freq = baseFreq * 0.9; norm = 0;
+      for (let o = 0; o < 5; o++) {
+        r += amp * (1 - Math.abs(n2.noise(u * freq + oy, v * freq + ox)));
+        norm += amp; amp *= 0.5; freq *= 2.1;
+      }
+      r = r / norm;
+      let val = (1 - ridgeMix) * (f * 0.5 + 0.5) + ridgeMix * r * r;
+      h[j * GRID + i] = val;
+      if (val < min) min = val; if (val > max) max = val;
+    }
+  }
+  for (let k = 0; k < h.length; k++) {
+    let t = Math.min(1, Math.max(0, (h[k] - min) / (max - min)));
+    t = Math.pow(t, 1.35);            // broaden valleys
+    // Taper to sea at the map edges so the world edge is never visible as a void
+    const i = k % GRID, j = (k - i) / GRID;
+    const d = Math.max(Math.abs(i / (GRID - 1) - 0.5), Math.abs(j / (GRID - 1) - 0.5)) * 2; // 0 centre, 1 edge
+    const e = Math.min(1, Math.max(0, (d - 0.62) / (0.95 - 0.62)));
+    const falloff = 1 - e * e * (3 - 2 * e);
+    h[k] = SEA_LEVEL * 0.3 + t * (MAX_HEIGHT - SEA_LEVEL * 0.3) * falloff;
+  }
+  return h;
+}
+
+function sampleHeight(h, x, z) {   // x,z in world coords (centre 0), bilinear
+  const u = (x / WORLD_SIZE + 0.5) * (GRID - 1);
+  const v = (z / WORLD_SIZE + 0.5) * (GRID - 1);
+  const i = Math.max(0, Math.min(GRID - 2, Math.floor(u)));
+  const j = Math.max(0, Math.min(GRID - 2, Math.floor(v)));
+  const fu = u - i, fv = v - j;
+  const a = h[j * GRID + i], b = h[j * GRID + i + 1], c = h[(j + 1) * GRID + i], d = h[(j + 1) * GRID + i + 1];
+  return (a * (1 - fu) + b * fu) * (1 - fv) + (c * (1 - fu) + d * fu) * fv;
+}
+
+// ---------------------------------------------------------------------------
+// Candidate points
+// ---------------------------------------------------------------------------
+function pickPoints(h, count, minSpacingFrac, rand) {
+  const pts = [];
+  let tries = 0;
+  while (pts.length < count && tries < 5000) {
+    tries++;
+    const u = 0.15 + rand() * 0.7, v = 0.15 + rand() * 0.7;
+    if (pts.every(p => Math.hypot(p.u - u, p.v - v) >= minSpacingFrac)) {
+      const x = (u - 0.5) * WORLD_SIZE, z = (v - 0.5) * WORLD_SIZE;
+      const y = sampleHeight(h, x, z);
+      if (y < SEA_LEVEL + 8) continue;   // land only
+      pts.push({ u, v, x, z, y });
+    }
+  }
+  return pts;
+}
+
+// ---------------------------------------------------------------------------
+// Peaks (named landmarks)
+// ---------------------------------------------------------------------------
+function findPeaks(h, maxCount = 6) {
+  const cands = [];
+  const R = 3;
+  for (let j = R; j < GRID - R; j++) {
+    for (let i = R; i < GRID - R; i++) {
+      const v = h[j * GRID + i];
+      if (v < MAX_HEIGHT * 0.45) continue;
+      let isMax = true;
+      for (let dj = -R; dj <= R && isMax; dj++)
+        for (let di = -R; di <= R; di++)
+          if ((di || dj) && h[(j + dj) * GRID + i + di] >= v) { isMax = false; break; }
+      if (isMax) cands.push({ i, j, y: v });
+    }
+  }
+  cands.sort((a, b) => b.y - a.y);
+  const peaks = [];
+  for (const c of cands) {
+    const u = c.i / (GRID - 1), v = c.j / (GRID - 1);
+    if (peaks.every(p => Math.hypot(p.u - u, p.v - v) > 0.14)) {
+      peaks.push({ u, v, x: (u - 0.5) * WORLD_SIZE, z: (v - 0.5) * WORLD_SIZE, y: c.y, name: PEAK_NAMES[peaks.length] });
+      if (peaks.length >= maxCount) break;
+    }
+  }
+  return peaks;
+}
+
+// Line of sight through the heightfield from camera to a peak summit
+function isVisible(h, from, to) {
+  const dx = to.x - from.x, dz = to.z - from.z;
+  const dist = Math.hypot(dx, dz);
+  const steps = Math.max(4, Math.floor(dist / 15));
+  for (let s = 1; s < steps - 1; s++) {
+    const t = s / steps;
+    const lineY = from.y + (to.y - from.y) * t;
+    if (sampleHeight(h, from.x + dx * t, from.z + dz * t) > lineY + 1.5) return false;
+  }
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// Contour map (marching squares)
+// ---------------------------------------------------------------------------
+const mapCanvas = document.getElementById('mapCanvas');
+const mctx = mapCanvas.getContext('2d');
+
+function drawMap(h, points, reveal, peaks = []) {
+  const W = mapCanvas.width, S = W / (GRID - 1);
+  mctx.fillStyle = '#f4f1e6';
+  mctx.fillRect(0, 0, W, W);
+
+  // Subtle hypsometric tint
+  const img = mctx.createImageData(W, W);
+  for (let py = 0; py < W; py++) {
+    for (let px = 0; px < W; px++) {
+      const x = (px / W - 0.5) * WORLD_SIZE, z = (py / W - 0.5) * WORLD_SIZE;
+      const y = sampleHeight(h, x, z);
+      const t = y / MAX_HEIGHT;
+      const k = (py * W + px) * 4;
+      if (y <= SEA_LEVEL) { img.data[k] = 168; img.data[k + 1] = 205; img.data[k + 2] = 235; img.data[k + 3] = 255; continue; }
+      img.data[k] = 244 - t * 40; img.data[k + 1] = 241 - t * 60; img.data[k + 2] = 230 - t * 70; img.data[k + 3] = 255;
+    }
+  }
+  mctx.putImageData(img, 0, 0);
+
+  // Contours
+  const levels = Math.floor(MAX_HEIGHT / CONTOUR_INTERVAL);
+  for (let li = 1; li <= levels; li++) {
+    const L = li * CONTOUR_INTERVAL;
+    const isIndex = li % INDEX_EVERY === 0;
+    mctx.strokeStyle = isIndex ? '#8a4b1f' : '#c47a3a';
+    mctx.lineWidth = isIndex ? 1.8 : 0.8;
+    mctx.beginPath();
+    for (let j = 0; j < GRID - 1; j++) {
+      for (let i = 0; i < GRID - 1; i++) {
+        const tl = h[j * GRID + i], tr = h[j * GRID + i + 1];
+        const bl = h[(j + 1) * GRID + i], br = h[(j + 1) * GRID + i + 1];
+        const c = (tl >= L ? 8 : 0) | (tr >= L ? 4 : 0) | (br >= L ? 2 : 0) | (bl >= L ? 1 : 0);
+        if (c === 0 || c === 15) continue;
+        const x0 = i * S, y0 = j * S;
+        const lerp = (a, b) => (L - a) / (b - a);
+        const top = [x0 + lerp(tl, tr) * S, y0];
+        const right = [x0 + S, y0 + lerp(tr, br) * S];
+        const bottom = [x0 + lerp(bl, br) * S, y0 + S];
+        const left = [x0, y0 + lerp(tl, bl) * S];
+        const seg = (a, b) => { mctx.moveTo(a[0], a[1]); mctx.lineTo(b[0], b[1]); };
+        switch (c) {
+          case 1: case 14: seg(left, bottom); break;
+          case 2: case 13: seg(bottom, right); break;
+          case 3: case 12: seg(left, right); break;
+          case 4: case 11: seg(top, right); break;
+          case 5: seg(left, top); seg(bottom, right); break;
+          case 6: case 9: seg(top, bottom); break;
+          case 7: case 8: seg(left, top); break;
+          case 10: seg(top, right); seg(left, bottom); break;
+        }
+      }
+    }
+    mctx.stroke();
+  }
+
+  // Grid lines (500 m)
+  mctx.strokeStyle = 'rgba(60,80,140,.18)'; mctx.lineWidth = 1;
+  for (let m = 500; m < WORLD_SIZE; m += 500) {
+    const p = m / WORLD_SIZE * W;
+    mctx.beginPath(); mctx.moveTo(p, 0); mctx.lineTo(p, W); mctx.moveTo(0, p); mctx.lineTo(W, p); mctx.stroke();
+  }
+
+  // North arrow + scale bar
+  mctx.fillStyle = '#1b2440'; mctx.font = 'bold 16px sans-serif';
+  mctx.fillText('N', W - 34, 26);
+  mctx.beginPath(); mctx.moveTo(W - 27, 32); mctx.lineTo(W - 34, 56); mctx.lineTo(W - 27, 50); mctx.lineTo(W - 20, 56); mctx.closePath(); mctx.fill();
+  const sb = 500 / WORLD_SIZE * W;
+  mctx.fillRect(16, W - 26, sb, 5);
+  mctx.font = '12px sans-serif'; mctx.fillText('500 m', 16, W - 32);
+
+  // Peaks
+  peaks.forEach(pk => {
+    const px = pk.u * W, py = pk.v * W;
+    mctx.fillStyle = '#1b1b1b';
+    mctx.beginPath(); mctx.moveTo(px, py - 7); mctx.lineTo(px - 6, py + 4); mctx.lineTo(px + 6, py + 4); mctx.closePath(); mctx.fill();
+    mctx.font = 'bold 12px sans-serif';
+    const label = `${pk.name} ${Math.round(pk.y)}`;
+    const tw = mctx.measureText(label).width;
+    mctx.fillStyle = 'rgba(255,255,255,.75)'; mctx.fillRect(px + 8, py - 12, tw + 6, 15);
+    mctx.fillStyle = '#1b1b1b'; mctx.fillText(label, px + 11, py);
+  });
+
+  // Points
+  points.forEach((p, idx) => {
+    const px = p.u * W, py = p.v * W;
+    let fill = '#1d4ed8', ring = '#fff';
+    if (reveal) {
+      if (idx === reveal.correct) { fill = '#16a34a'; }
+      else if (idx === reveal.chosen) { fill = '#dc2626'; }
+      else { fill = '#64748b'; }
+    }
+    if (reveal && idx === reveal.correct) {
+      mctx.strokeStyle = '#16a34a'; mctx.lineWidth = 3;
+      mctx.beginPath(); mctx.arc(px, py, 24, 0, Math.PI * 2); mctx.stroke();
+    }
+    mctx.beginPath(); mctx.arc(px, py, 14, 0, Math.PI * 2);
+    mctx.fillStyle = fill; mctx.fill();
+    mctx.lineWidth = 2.5; mctx.strokeStyle = ring; mctx.stroke();
+    mctx.fillStyle = '#fff'; mctx.font = 'bold 15px sans-serif'; mctx.textAlign = 'center'; mctx.textBaseline = 'middle';
+    mctx.fillText(LETTERS[idx], px, py + 1);
+    mctx.textAlign = 'start'; mctx.textBaseline = 'alphabetic';
+  });
+
+  // Reveal: draw the view direction the player last looked at from the true point
+  if (reveal) {
+    const p = points[reveal.correct];
+    const px = p.u * W, py = p.v * W;
+    const dx = Math.sin(yaw), dz = -Math.cos(yaw);
+    mctx.strokeStyle = 'rgba(22,163,74,.7)'; mctx.lineWidth = 2; mctx.setLineDash([6, 4]);
+    mctx.beginPath(); mctx.moveTo(px, py); mctx.lineTo(px + dx * 70, py + dz * 70); mctx.stroke();
+    mctx.setLineDash([]);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 3D scene
+// ---------------------------------------------------------------------------
+const canvas3d = document.getElementById('view3d');
+const renderer = new THREE.WebGLRenderer({ canvas: canvas3d, antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+const scene = new THREE.Scene();
+const SKY = new THREE.Color(0x9fc5e8);
+scene.background = SKY;
+scene.fog = new THREE.Fog(SKY, WORLD_SIZE * 0.25, WORLD_SIZE * 0.75);
+const camera = new THREE.PerspectiveCamera(70, 1, 0.5, WORLD_SIZE * 2);
+
+const sun = new THREE.DirectionalLight(0xfff3d6, 2.2);
+sun.position.set(-1, 1.1, -0.6).multiplyScalar(1000);
+scene.add(sun);
+scene.add(new THREE.HemisphereLight(0xbfd9ff, 0x4a5a3a, 0.9));
+
+// Sea plane: extends far beyond the map so the horizon is water, never a void
+const sea = new THREE.Mesh(
+  new THREE.PlaneGeometry(WORLD_SIZE * 20, WORLD_SIZE * 20),
+  new THREE.MeshLambertMaterial({ color: 0x3b6fa8 })
+);
+sea.rotateX(-Math.PI / 2);
+sea.position.y = SEA_LEVEL;
+scene.add(sea);
+
+let terrainMesh = null;
+let yaw = 0, pitch = 0;
+
+function buildTerrainMesh(h) {
+  if (terrainMesh) { scene.remove(terrainMesh); terrainMesh.geometry.dispose(); terrainMesh.material.dispose(); }
+  const geo = new THREE.PlaneGeometry(WORLD_SIZE, WORLD_SIZE, GRID - 1, GRID - 1);
+  const pos = geo.attributes.position;
+  const colors = new Float32Array(pos.count * 3);
+  const c = new THREE.Color();
+  for (let k = 0; k < pos.count; k++) {
+    const y = h[k];                 // PlaneGeometry rows run top→bottom == north→south
+    pos.setZ(k, y);
+    const t = y / MAX_HEIGHT;
+    if (y < SEA_LEVEL + 6) c.setRGB(0.76, 0.72, 0.55);                 // beach
+    else if (t < 0.25) c.setRGB(0.28 + t * 0.4, 0.46 + t * 0.3, 0.22);
+    else if (t < 0.55) c.setRGB(0.42 + (t - 0.25) * 0.5, 0.42 + (t - 0.25) * 0.2, 0.22 + (t - 0.25) * 0.3);
+    else if (t < 0.82) c.setRGB(0.5 + (t - 0.55) * 0.4, 0.47 + (t - 0.55) * 0.4, 0.42 + (t - 0.55) * 0.5);
+    else c.setRGB(0.92, 0.94, 0.97);
+    colors[k * 3] = c.r; colors[k * 3 + 1] = c.g; colors[k * 3 + 2] = c.b;
+  }
+  geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  geo.rotateX(-Math.PI / 2);
+  geo.computeVertexNormals();
+  const mat = new THREE.MeshLambertMaterial({ vertexColors: true });
+  terrainMesh = new THREE.Mesh(geo, mat);
+  scene.add(terrainMesh);
+}
+
+function placeCamera(p) {
+  camera.position.set(p.x, p.y + EYE_HEIGHT, p.z);
+  yaw = Math.random() * Math.PI * 2; pitch = 0.02;
+  updateCamera();
+}
+
+function updateCamera() {
+  const dir = new THREE.Vector3(Math.sin(yaw) * Math.cos(pitch), Math.sin(pitch), -Math.cos(yaw) * Math.cos(pitch));
+  camera.lookAt(camera.position.clone().add(dir));
+  const deg = ((yaw * 180 / Math.PI) % 360 + 360) % 360;
+  const dirs = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+  document.getElementById('compass').textContent = `Heading ${String(Math.round(deg)).padStart(3, '0')}° ${dirs[Math.round(deg / 45) % 8]}`;
+}
+
+function resize3d() {
+  const w = canvas3d.clientWidth, hgt = canvas3d.clientHeight;
+  if (canvas3d.width !== w || canvas3d.height !== hgt) {
+    renderer.setSize(w, hgt, false);
+    camera.aspect = w / hgt; camera.updateProjectionMatrix();
+  }
+}
+
+// Look controls
+let dragging = false, lastX = 0, lastY = 0;
+canvas3d.addEventListener('pointerdown', e => { dragging = true; lastX = e.clientX; lastY = e.clientY; canvas3d.setPointerCapture(e.pointerId); });
+canvas3d.addEventListener('pointerup', e => { dragging = false; canvas3d.releasePointerCapture(e.pointerId); });
+canvas3d.addEventListener('pointercancel', () => dragging = false);
+canvas3d.addEventListener('pointermove', e => {
+  if (!dragging) return;
+  yaw += (e.clientX - lastX) * 0.005;
+  pitch = Math.max(-0.6, Math.min(0.8, pitch + (e.clientY - lastY) * 0.005));
+  lastX = e.clientX; lastY = e.clientY;
+  updateCamera();
+});
+
+// Peak labels in 3D view (only when hint is active)
+const labelBox = document.getElementById('peakLabels');
+let labelEls = [];
+function updatePeakLabels() {
+  if (!hintUsed || !peaks.length) { if (labelEls.length) { labelBox.innerHTML = ''; labelEls = []; } return; }
+  if (labelEls.length !== peaks.length) {
+    labelBox.innerHTML = '';
+    labelEls = peaks.map(pk => { const d = document.createElement('div'); d.className = 'peakLabel'; d.textContent = `▲ ${pk.name} · ${Math.round(pk.y)} m`; labelBox.appendChild(d); return d; });
+  }
+  const w = canvas3d.clientWidth, hgt = canvas3d.clientHeight;
+  const camPos = { x: camera.position.x, y: camera.position.y, z: camera.position.z };
+  const v = new THREE.Vector3();
+  peaks.forEach((pk, i) => {
+    const el = labelEls[i];
+    const dist = Math.hypot(pk.x - camPos.x, pk.z - camPos.z);
+    if (dist < 40 || dist > WORLD_SIZE * 0.7) { el.style.display = 'none'; return; }
+    v.set(pk.x, pk.y + 3, pk.z).project(camera);
+    if (v.z > 1 || v.x < -1 || v.x > 1 || v.y < -1 || v.y > 1) { el.style.display = 'none'; return; }
+    if (!isVisible(heights, camPos, pk)) { el.style.display = 'none'; return; }
+    el.style.display = 'block';
+    el.style.left = `${(v.x + 1) / 2 * w}px`;
+    el.style.top = `${(1 - v.y) / 2 * hgt - 10}px`;
+    el.style.opacity = dist > WORLD_SIZE * 0.5 ? 0.7 : 1;
+  });
+}
+
+function animate() {
+  requestAnimationFrame(animate);
+  resize3d();
+  updatePeakLabels();
+  renderer.render(scene, camera);
+}
+
+// ---------------------------------------------------------------------------
+// Game state
+// ---------------------------------------------------------------------------
+const $ = id => document.getElementById(id);
+let round = 0, score = 0, heights = null, points = [], peaks = [], target = 0, answered = false, hintUsed = false;
+let roundStart = 0, timerId = null, results = [];
+animate();
+
+function difficulty(r) {          // r = 1..ROUNDS
+  if (r <= 3) return { count: 4, spacing: 0.26 };
+  if (r <= 7) return { count: 5, spacing: 0.2 };
+  return { count: 6, spacing: 0.15 };
+}
+
+function startGame() {
+  round = 0; score = 0; results = [];
+  $('scoreLbl').textContent = '0';
+  $('startOverlay').classList.add('hidden');
+  $('endOverlay').classList.add('hidden');
+  nextRound();
+}
+
+function nextRound() {
+  round++;
+  if (round > ROUNDS) return endGame();
+  answered = false;
+  const seed = (Date.now() ^ (round * 7919)) >>> 0;
+  const rand = mulberry32(seed + 17);
+  heights = generateTerrain(seed);
+  const d = difficulty(round);
+  points = pickPoints(heights, d.count, d.spacing, rand);
+  target = Math.floor(rand() * points.length);
+  peaks = findPeaks(heights);
+  hintUsed = false;
+  $('hintBtn').disabled = false;
+  $('hintText').textContent = `Stuck? Reveal the names of the peaks you can see (costs ${HINT_PENALTY * 100}% of this round's points).`;
+
+  buildTerrainMesh(heights);
+  placeCamera(points[target]);
+  drawMap(heights, points, null, peaks);
+  renderChoices();
+
+  $('roundLbl').textContent = `${round} / ${ROUNDS}`;
+  $('feedback').innerHTML = `<span id="feedbackText">Which point (A–${LETTERS[points.length - 1]}) was this view taken from?</span>`;
+  roundStart = performance.now();
+  clearInterval(timerId);
+  timerId = setInterval(tick, 100);
+  tick();
+}
+
+function tick() {
+  const elapsed = (performance.now() - roundStart) / 1000;
+  $('timer').textContent = elapsed.toFixed(1);
+}
+
+function renderChoices() {
+  const box = $('choices');
+  box.innerHTML = '';
+  points.forEach((_, i) => {
+    const b = document.createElement('button');
+    b.textContent = LETTERS[i];
+    b.onclick = () => answer(i);
+    box.appendChild(b);
+  });
+}
+
+function answer(idx) {
+  if (answered) return;
+  answered = true;
+  clearInterval(timerId);
+  const elapsed = (performance.now() - roundStart) / 1000;
+  const correct = idx === target;
+  let pts = 0;
+  if (correct) pts = Math.round(1000 * (0.25 + 0.75 * Math.max(0, 1 - elapsed / SCORE_WINDOW)) * (hintUsed ? 1 - HINT_PENALTY : 1));
+  $('hintBtn').disabled = true;
+  score += pts;
+  results.push({ round, correct, elapsed, pts });
+  $('scoreLbl').textContent = score;
+
+  drawMap(heights, points, { correct: target, chosen: idx }, peaks);
+  [...$('choices').children].forEach((b, i) => {
+    b.disabled = true;
+    if (i === target) b.classList.add('correct');
+    else if (i === idx) b.classList.add('wrong');
+  });
+
+  const msg = idx === -1 ? `⏱️ Time's up! It was point <b>${LETTERS[target]}</b>.`
+    : correct ? `✅ Correct! Point <b>${LETTERS[target]}</b> in ${elapsed.toFixed(1)}s — <b>+${pts}</b> pts`
+    : `❌ Not quite. You chose <b>${LETTERS[idx]}</b>; it was <b>${LETTERS[target]}</b> (${Math.round(points[target].y)} m).`;
+  $('feedback').innerHTML = `<span>${msg}</span><button class="btn" id="nextBtn">${round >= ROUNDS ? 'See results' : 'Next round →'}</button>`;
+  $('nextBtn').onclick = nextRound;
+}
+
+function endGame() {
+  clearInterval(timerId);
+  const correctCount = results.filter(r => r.correct).length;
+  const avg = results.filter(r => r.correct).reduce((s, r) => s + r.elapsed, 0) / Math.max(1, correctCount);
+  $('finalScore').textContent = score;
+  $('finalSummary').textContent = `${correctCount} / ${ROUNDS} correct · average time on correct answers ${correctCount ? avg.toFixed(1) + 's' : '–'}`;
+  saveHighScore(score, correctCount);
+  $('endHighScores').innerHTML = highScoreTable();
+  $('endOverlay').classList.remove('hidden');
+}
+
+// High scores (localStorage)
+function loadHighScores() { try { return JSON.parse(localStorage.getItem('topoquiz_scores') || '[]'); } catch { return []; } }
+function saveHighScore(s, c) {
+  const list = loadHighScores();
+  list.push({ score: s, correct: c, date: new Date().toISOString().slice(0, 10) });
+  list.sort((a, b) => b.score - a.score);
+  localStorage.setItem('topoquiz_scores', JSON.stringify(list.slice(0, 5)));
+}
+function highScoreTable() {
+  const list = loadHighScores();
+  if (!list.length) return '';
+  return `<table><tr><th>#</th><th>Score</th><th>Correct</th><th>Date</th></tr>` +
+    list.map((r, i) => `<tr><td>${i + 1}</td><td><b>${r.score}</b></td><td>${r.correct}/${ROUNDS}</td><td>${r.date}</td></tr>`).join('') + `</table>`;
+}
+
+// Map click
+mapCanvas.addEventListener('click', e => {
+  if (answered || !points.length) return;
+  const r = mapCanvas.getBoundingClientRect();
+  const x = (e.clientX - r.left) / r.width * mapCanvas.width;
+  const y = (e.clientY - r.top) / r.height * mapCanvas.height;
+  let best = -1, bestD = 28;
+  points.forEach((p, i) => {
+    const d = Math.hypot(p.u * mapCanvas.width - x, p.v * mapCanvas.height - y);
+    if (d < bestD) { bestD = d; best = i; }
+  });
+  if (best >= 0) answer(best);
+});
+
+// Keyboard
+window.addEventListener('keydown', e => {
+  const k = e.key.toUpperCase();
+  const i = LETTERS.indexOf(k);
+  if (i >= 0 && i < points.length && !answered && round > 0) answer(i);
+  if (e.key === 'Enter' && answered) $('nextBtn')?.click();
+});
+
+$('hintBtn').onclick = () => {
+  if (answered || hintUsed || round === 0) return;
+  hintUsed = true;
+  $('hintBtn').disabled = true;
+  $('hintText').innerHTML = `💡 Hint active — visible peaks are labelled in the 3D view. Look around and match them to the ▲ symbols on the map.`;
+};
+
+$('startBtn').onclick = startGame;
+$('againBtn').onclick = startGame;
+$('highScores').innerHTML = highScoreTable();
+
+// Show a preview terrain behind the start screen
+(() => {
+  const seed = (Date.now() & 0xffff) >>> 0;
+  heights = generateTerrain(seed);
+  const rand = mulberry32(seed);
+  points = pickPoints(heights, 5, 0.2, rand);
+  peaks = findPeaks(heights);
+  buildTerrainMesh(heights);
+  placeCamera(points[0]);
+  drawMap(heights, points, null, peaks);
+  points = [];
+})();
+</script>
+</body>
+</html>
