@@ -68,7 +68,7 @@
   <section class="panel">
     <div class="panel-head">
       <span id="mapTitle">Topographic map</span>
-      <span class="legend">Contour interval 20 m · index every 100 m</span>
+      <span class="legend">Contour 20 m · index 100 m · <span id="sunLegend">☀ Sun from 225°</span></span>
     </div>
     <div class="panel-body">
       <canvas id="mapCanvas" width="700" height="700"></canvas>
@@ -109,6 +109,7 @@
       <li>10 rounds, no time limit — a stopwatch runs while you think. Faster answers score more (max <b>1000</b> per round).</li>
       <li><b>Where am I?</b> Easy/Medium: pick the right lettered point (wrong = 0). Hard: drop a pin — within <b>100 m</b> = full marks, fading to zero at 600 m.</li>
       <li><b>Which way am I facing?</b> The view is locked and the compass hidden. Drag the bearing arrow on the map (or type a heading) — within <b>5°</b> = full marks, fading to zero at 45°. Harder tiers narrow the field of view.</li>
+      <li>The sun's direction is printed on the map — lit and shaded slopes are a real clue. In heading rounds you can look ±60° either side of the mystery heading; the readout tells you how far you've turned.</li>
       <li>Named peaks (▲) are on the map. The <b>💡 hint</b> labels the peaks visible in the 3D view — costs 40% of the round's points.</li>
       <li>Keyboard: <b>A–F</b> to answer, <b>←/→</b> nudge heading, <b>Enter</b> to confirm / next round.</li>
     </ol>
@@ -320,14 +321,88 @@ function isVisible(h, from, to) {
   return true;
 }
 
+// Skyline distance along one azimuth: how far away the farthest visible terrain is
+function skylineDist(h, x, z, y, azDeg) {
+  const rad = azDeg * Math.PI / 180, dx = Math.sin(rad), dz = -Math.cos(rad);
+  let maxSlope = -Infinity, far = 0;
+  for (let d = 20; d < WORLD_SIZE; d += 25) {
+    const px = x + dx * d, pz = z + dz * d;
+    if (Math.abs(px) > WORLD_SIZE / 2 || Math.abs(pz) > WORLD_SIZE / 2) break;
+    const s = (sampleHeight(h, px, pz) - y) / d;
+    if (s > maxSlope) { maxSlope = s; far = d; }
+  }
+  return far;
+}
+
+function bearingTo(from, to) {
+  return (Math.atan2(to.x - from.x, -(to.z - from.z)) * 180 / Math.PI + 360) % 360;
+}
+function angDiff(a, b) { let d = Math.abs(a - b) % 360; return d > 180 ? 360 - d : d; }
+
+// Choose a viewpoint with long sightlines, and a heading with landmarks in frame
+function pickVantage(h, peaks, fov, rand) {
+  const cands = pickPoints(h, 28, 0.06, rand);
+  const eye = p => ({ x: p.x, y: p.y + EYE_HEIGHT, z: p.z });
+  const scored = cands.map(p => {
+    const e = eye(p);
+    let sum = 0;
+    for (let a = 0; a < 360; a += 15) sum += skylineDist(h, e.x, e.z, e.y, a);
+    const vis = peaks.filter(pk => isVisible(h, e, pk)).length;
+    return { p, score: sum / 24 + vis * 250 };
+  }).sort((a, b) => b.score - a.score);
+  const top = scored.slice(0, 5);
+  const p = top[Math.floor(rand() * top.length)].p;
+  const e = eye(p);
+  const visPeaks = peaks.filter(pk => isVisible(h, e, pk)).map(pk => ({ pk, b: bearingTo(p, pk), d: Math.hypot(pk.x - p.x, pk.z - p.z) }));
+  const half = fov / 2;
+  const headings = [];
+  for (let hd = 0; hd < 360; hd += 5) {
+    let s = 0;
+    visPeaks.forEach(v => { if (angDiff(v.b, hd) < half - 4 && v.d > 150) s += 600; });
+    let sk = 0, n = 0;
+    for (let a = -half; a <= half; a += 5) { sk += skylineDist(h, e.x, e.z, e.y, hd + a); n++; }
+    s += sk / n;
+    headings.push({ hd, s });
+  }
+  headings.sort((a, b) => b.s - a.s);
+  const best = headings.slice(0, 8);
+  const heading = best[Math.floor(rand() * best.length)].hd + (rand() - 0.5) * 4;  // jitter so it's not always a multiple of 5
+  return { point: p, heading: (heading + 360) % 360 };
+}
+
 // ---------------------------------------------------------------------------
 // Contour map (marching squares)
 // ---------------------------------------------------------------------------
 const mapCanvas = document.getElementById('mapCanvas');
-const mctx = mapCanvas.getContext('2d');
+let mctx = mapCanvas.getContext('2d');
+const baseCanvas = document.createElement('canvas');
+baseCanvas.width = mapCanvas.width; baseCanvas.height = mapCanvas.height;
+let baseCacheKey = null;
 
 function drawMap(h, points, reveal, peaks = [], opts = {}) {
   const W = mapCanvas.width, S = W / (GRID - 1);
+  const mainCtx = mapCanvas.getContext('2d');
+  const key = h;
+  if (baseCacheKey !== key) {
+    mctx = baseCanvas.getContext('2d');
+    drawMapBase(h, peaks, W, S);
+    baseCacheKey = key;
+  }
+  mctx = mainCtx;
+  mctx.drawImage(baseCanvas, 0, 0);
+
+  // Sun direction marker on the map edge
+  {
+    const rad = sunAz * Math.PI / 180, cx = W / 2, cy = W / 2;
+    const sx = cx + Math.sin(rad) * (W / 2 - 22), sy = cy - Math.cos(rad) * (W / 2 - 22);
+    mctx.font = '20px sans-serif'; mctx.textAlign = 'center'; mctx.textBaseline = 'middle';
+    mctx.fillText('☀️', sx, sy);
+    mctx.textAlign = 'start'; mctx.textBaseline = 'alphabetic';
+  }
+  drawMapOverlays(h, points, reveal, peaks, opts, W);
+}
+
+function drawMapBase(h, peaks, W, S) {
   mctx.fillStyle = '#f4f1e6';
   mctx.fillRect(0, 0, W, W);
 
@@ -408,6 +483,9 @@ function drawMap(h, points, reveal, peaks = [], opts = {}) {
     mctx.fillStyle = '#1b1b1b'; mctx.fillText(label, px + 11, py);
   });
 
+}
+
+function drawMapOverlays(h, points, reveal, peaks, opts, W) {
   // Points (hidden in free-click mode)
   if (!opts.hidePoints) points.forEach((p, idx) => {
     const px = p.u * W, py = p.v * W;
@@ -491,6 +569,13 @@ function drawMap(h, points, reveal, peaks = [], opts = {}) {
       mctx.beginPath(); mctx.moveTo(ex + hx * 12, ey + hy * 12);
       mctx.lineTo(ex - hy * 7, ey + hx * 7); mctx.lineTo(ex + hy * 7, ey - hx * 7); mctx.closePath(); mctx.fill();
     };
+    if (truth == null && guess != null && opts.dial.look != null) {
+      // Wedge showing what you're currently looking at, relative to your guessed heading
+      const half = (opts.dial.fov || 60) / 2, c = guess + opts.dial.look;
+      const a0 = (c - half) * Math.PI / 180, a1 = (c + half) * Math.PI / 180;
+      mctx.fillStyle = 'rgba(29,78,216,.13)';
+      mctx.beginPath(); mctx.moveTo(px, py); mctx.arc(px, py, W * 0.6, a0 - Math.PI / 2, a1 - Math.PI / 2); mctx.closePath(); mctx.fill();
+    }
     if (truth != null) {
       // FOV wedge of the true view
       const half = (opts.dial.fov || 60) / 2, a0 = (truth - half) * Math.PI / 180, a1 = (truth + half) * Math.PI / 180;
@@ -533,16 +618,32 @@ function drawMap(h, points, reveal, peaks = [], opts = {}) {
 const canvas3d = document.getElementById('view3d');
 const renderer = new THREE.WebGLRenderer({ canvas: canvas3d, antialias: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 const scene = new THREE.Scene();
 const SKY = new THREE.Color(0x9fc5e8);
 scene.background = SKY;
 scene.fog = new THREE.Fog(SKY, WORLD_SIZE * 0.25, WORLD_SIZE * 0.75);
 const camera = new THREE.PerspectiveCamera(70, 1, 0.5, WORLD_SIZE * 2);
 
-const sun = new THREE.DirectionalLight(0xfff3d6, 2.2);
-sun.position.set(-1, 1.1, -0.6).multiplyScalar(1000);
-scene.add(sun);
-scene.add(new THREE.HemisphereLight(0xbfd9ff, 0x4a5a3a, 0.9));
+const sun = new THREE.DirectionalLight(0xfff3d6, 2.6);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.left = -WORLD_SIZE * 0.75; sun.shadow.camera.right = WORLD_SIZE * 0.75;
+sun.shadow.camera.top = WORLD_SIZE * 0.75; sun.shadow.camera.bottom = -WORLD_SIZE * 0.75;
+sun.shadow.camera.near = 100; sun.shadow.camera.far = 8000;
+sun.shadow.bias = -0.0005;
+scene.add(sun); scene.add(sun.target);
+scene.add(new THREE.HemisphereLight(0xbfd9ff, 0x4a5a3a, 0.55));
+let sunAz = 225, sunEl = 35;
+function setSun(az) {
+  sunAz = Math.round(az);
+  const r = sunAz * Math.PI / 180, e = sunEl * Math.PI / 180;
+  sun.position.set(Math.sin(r) * Math.cos(e), Math.sin(e), -Math.cos(r) * Math.cos(e)).multiplyScalar(3000);
+  sun.target.position.set(0, 0, 0);
+  document.getElementById('sunLegend').textContent = `☀ Sun from ${String(sunAz).padStart(3, '0')}°`;
+}
+setSun(225);
 
 // Sea plane: extends far beyond the map so the horizon is water, never a void
 const sea = new THREE.Mesh(
@@ -551,6 +652,7 @@ const sea = new THREE.Mesh(
 );
 sea.rotateX(-Math.PI / 2);
 sea.position.y = SEA_LEVEL;
+sea.receiveShadow = true;
 scene.add(sea);
 
 let terrainMesh = null;
@@ -578,24 +680,37 @@ function buildTerrainMesh(h) {
   geo.computeVertexNormals();
   const mat = new THREE.MeshLambertMaterial({ vertexColors: true });
   terrainMesh = new THREE.Mesh(geo, mat);
+  terrainMesh.castShadow = true; terrainMesh.receiveShadow = true;
   scene.add(terrainMesh);
 }
 
-let yawLocked = false, compassHidden = false;
-function placeCamera(p, fov = WHERE_FOV) {
+let yawLocked = false, compassHidden = false, baseYaw = 0;
+const LOOK_LIMIT = 60 * Math.PI / 180;
+function placeCamera(p, fov = WHERE_FOV, headingDegrees = null) {
   camera.position.set(p.x, p.y + EYE_HEIGHT, p.z);
   camera.fov = fov; camera.updateProjectionMatrix();
-  yaw = Math.random() * Math.PI * 2; pitch = 0.02;
+  yaw = headingDegrees == null ? Math.random() * Math.PI * 2 : headingDegrees * Math.PI / 180;
+  baseYaw = yaw; pitch = 0.02;
   updateCamera();
 }
 function headingDeg() { return ((yaw * 180 / Math.PI) % 360 + 360) % 360; }
+function baseHeadingDeg() { return ((baseYaw * 180 / Math.PI) % 360 + 360) % 360; }
+function lookOffsetDeg() { return (yaw - baseYaw) * 180 / Math.PI; }
 
 function updateCamera() {
   const dir = new THREE.Vector3(Math.sin(yaw) * Math.cos(pitch), Math.sin(pitch), -Math.cos(yaw) * Math.cos(pitch));
   camera.lookAt(camera.position.clone().add(dir));
   const deg = headingDeg();
   const dirs = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
-  document.getElementById('compass').textContent = compassHidden ? '🧭 Compass hidden' : `Heading ${String(Math.round(deg)).padStart(3, '0')}° ${dirs[Math.round(deg / 45) % 8]}`;
+  let txt;
+  if (compassHidden) {
+    const off = Math.round(lookOffsetDeg());
+    txt = off === 0 ? '🧭 Facing the mystery heading' : off < 0 ? `◀ ${-off}° left of the mystery heading` : `▶ ${off}° right of the mystery heading`;
+  } else {
+    txt = `Heading ${String(Math.round(deg)).padStart(3, '0')}° ${dirs[Math.round(deg / 45) % 8]}`;
+  }
+  document.getElementById('compass').textContent = txt;
+  if (typeof onCameraTurned === 'function') onCameraTurned();
 }
 
 function resize3d() {
@@ -613,7 +728,8 @@ canvas3d.addEventListener('pointerup', e => { dragging = false; canvas3d.release
 canvas3d.addEventListener('pointercancel', () => dragging = false);
 canvas3d.addEventListener('pointermove', e => {
   if (!dragging) return;
-  if (!yawLocked) yaw += (e.clientX - lastX) * 0.005;
+  yaw += (e.clientX - lastX) * 0.005;
+  if (yawLocked) yaw = Math.max(baseYaw - LOOK_LIMIT, Math.min(baseYaw + LOOK_LIMIT, yaw));
   pitch = Math.max(-0.6, Math.min(0.8, pitch + (e.clientY - lastY) * 0.005));
   lastX = e.clientX; lastY = e.clientY;
   updateCamera();
@@ -656,6 +772,12 @@ function animate() {
 // Game state
 // ---------------------------------------------------------------------------
 const $ = id => document.getElementById(id);
+let mapRedrawPending = false;
+window.onCameraTurned = () => {
+  if (qType !== 'heading' || answered || guessHeading == null || mapRedrawPending) return;
+  mapRedrawPending = true;
+  requestAnimationFrame(() => { mapRedrawPending = false; redrawMap(); });
+};
 let round = 0, score = 0, heights = null, points = [], peaks = [], target = 0, answered = false, hintUsed = false;
 let roundStart = 0, timerId = null, results = [];
 let diffKey = localStorage.getItem('topoquiz_diff') || 'easy';
@@ -677,6 +799,7 @@ setDifficulty(diffKey);
 
 function startGame() {
   round = 0; score = 0; results = [];
+  setSun(120 + Math.random() * 120);   // somewhere in the southern sky, SE..SW
   // Half of each question type, shuffled
   qPlan = [];
   for (let i = 0; i < ROUNDS; i++) qPlan.push(i < ROUNDS / 2 ? 'where' : 'heading');
@@ -697,23 +820,25 @@ function nextRound() {
   heights = generateTerrain(seed);
   const d = D();
   const isHeading = qType === 'heading';
-  points = isHeading ? pickPoints(heights, 1, 0, rand) : pickPoints(heights, d.count, d.spacing, rand);
-  target = Math.floor(rand() * points.length);
   peaks = findPeaks(heights);
+  let vantage = null;
+  if (isHeading) { vantage = pickVantage(heights, peaks, d.fov, rand); points = [vantage.point]; }
+  else points = pickPoints(heights, d.count, d.spacing, rand);
+  target = Math.floor(rand() * points.length);
   hintUsed = false;
   $('hintBtn').disabled = false;
   $('hintText').textContent = `Stuck? Reveal the names of the peaks you can see (costs ${HINT_PENALTY * 100}% of this round's points).`;
 
   buildTerrainMesh(heights);
   yawLocked = isHeading; compassHidden = isHeading;
-  placeCamera(points[target], isHeading ? d.fov : WHERE_FOV);
+  placeCamera(points[target], isHeading ? d.fov : WHERE_FOV, vantage ? vantage.heading : null);
   redrawMap();
   renderChoices();
 
   $('mapTitle').textContent = isHeading ? '📍 You are here — which way is the view facing?' : '❓ Where am I? Find the viewpoint';
-  $('viewTitle').textContent = isHeading ? '3D view — heading locked' : '3D view from the mystery point';
-  $('viewLegend').textContent = isHeading ? 'Drag to tilt only' : 'Drag to look around';
-  $('viewHint').textContent = isHeading ? 'View is locked to the mystery heading' : 'You can rotate but not move';
+  $('viewTitle').textContent = isHeading ? '3D view — mystery heading' : '3D view from the mystery point';
+  $('viewLegend').textContent = isHeading ? 'Drag to look ±60°' : 'Drag to look around';
+  $('viewHint').textContent = isHeading ? 'Answer = the heading you started facing' : 'You can rotate but not move';
   $('roundLbl').textContent = `${round} / ${ROUNDS} · ${d.label}`;
   $('feedback').innerHTML = isHeading
     ? `<span id="feedbackText">Drag the arrow on the map to the direction you're looking (or type a heading), then <b>Confirm</b>.</span>`
@@ -730,7 +855,7 @@ function redrawMap(reveal = null) {
   const d = D();
   if (qType === 'heading') {
     const p = points[target];
-    drawMap(heights, points, null, peaks, { hidePoints: true, dial: { u: p.u, v: p.v, guess: guessHeading, truth: reveal ? headingDeg() : null, fov: d.fov } });
+    drawMap(heights, points, null, peaks, { hidePoints: true, dial: { u: p.u, v: p.v, guess: guessHeading, truth: reveal ? baseHeadingDeg() : null, fov: d.fov, look: lookOffsetDeg() } });
     return;
   }
   drawMap(heights, points, reveal, peaks, { hidePoints: d.freeClick, pin: d.freeClick ? pin : null });
@@ -810,7 +935,7 @@ function setGuessHeading(deg, syncInput = true) {
 function answerHeading() {
   if (answered || guessHeading == null || qType !== 'heading') return;
   const elapsed = (performance.now() - roundStart) / 1000;
-  const truth = headingDeg();
+  const truth = baseHeadingDeg();
   let err = Math.abs(guessHeading - truth) % 360; if (err > 180) err = 360 - err;
   let f = 0;
   if (err <= HEADING_FULL_DEG) f = 1;
