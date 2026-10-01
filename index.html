@@ -739,7 +739,8 @@ canvas3d.addEventListener('pointermove', e => {
 const labelBox = document.getElementById('peakLabels');
 let labelEls = [];
 function updatePeakLabels() {
-  if (!hintUsed || !peaks.length) { if (labelEls.length) { labelBox.innerHTML = ''; labelEls = []; } return; }
+  const show = (hintUsed || answered) && peaks.length;
+  if (!show) { if (labelEls.length) { labelBox.innerHTML = ''; labelEls = []; } return; }
   if (labelEls.length !== peaks.length) {
     labelBox.innerHTML = '';
     labelEls = peaks.map(pk => { const d = document.createElement('div'); d.className = 'peakLabel'; d.textContent = `▲ ${pk.name} · ${Math.round(pk.y)} m`; labelBox.appendChild(d); return d; });
@@ -900,6 +901,7 @@ function finishRound(pts, correct, elapsed, msg, reveal) {
   answered = true;
   clearInterval(timerId);
   $('hintBtn').disabled = true;
+  $('hintText').innerHTML = `🔍 Reveal — the peaks you can see are now labelled${qType === 'heading' ? ' and the compass is live' : ''}. Look around to see what you missed.`;
   score += pts;
   results.push({ round, correct, elapsed, pts });
   $('scoreLbl').textContent = score;
